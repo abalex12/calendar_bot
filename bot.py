@@ -52,36 +52,38 @@ USERS_FILE = "users.json"
 #   User Counter Functions with S3 Support  
 
 def load_users():
-    """Load the set of user IDs from S3 or local file"""
+    """Load the set of user records from S3 or local file.
+    Returns a dict: {user_id: {"username": "...", "first_name": "...", ...}}
+    """
     if USE_S3:
         try:
             response = s3_client.get_object(Bucket=AWS_S3_BUCKET_NAME, Key=USERS_FILE)
             data = json.loads(response['Body'].read().decode('utf-8'))
-            return set(data.get("users", []))
+            return data.get("users", {})
         except ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
-                # File doesn't exist yet, return empty set
-                return set()
+                # File doesn't exist yet, return empty dict
+                return {}
             else:
                 print(f"Error loading users from S3: {e}")
-                return set()
+                return {}
         except Exception as e:
             print(f"Unexpected error loading users from S3: {e}")
-            return set()
+            return {}
     else:
         # Fallback to local file
         if os.path.exists(USERS_FILE):
             try:
                 with open(USERS_FILE, "r") as f:
                     data = json.load(f)
-                    return set(data.get("users", []))
+                    return data.get("users", {})
             except (json.JSONDecodeError, IOError):
-                return set()
-        return set()
+                return {}
+        return {}
 
-def save_users(users_set):
-    """Save the set of user IDs to S3 or local file"""
-    data = {"users": list(users_set)}
+def save_users(users_dict):
+    """Save the user records dict to S3 or local file"""
+    data = {"users": users_dict}
     json_data = json.dumps(data, indent=2)
     
     if USE_S3:
@@ -102,17 +104,27 @@ def save_users(users_set):
         except IOError as e:
             print(f"Error saving users locally: {e}")
 
-def add_user(user_id):
-    """Add a user ID to the tracking set and save"""
+def add_user(user_id, username=None, first_name=None):
+    """Add or update a user record and return True if new user"""
     users = load_users()
-    is_new = user_id not in users
-    users.add(user_id)
+    is_new = str(user_id) not in users
+    
+    users[str(user_id)] = {
+        "username": username or "N/A",
+        "first_name": first_name or "N/A",
+        "user_id": user_id,
+    }
+    
     save_users(users)
     return is_new
 
 def get_user_count():
     """Get the total number of unique users"""
     return len(load_users())
+
+def get_all_users():
+    """Get all user records as a dict"""
+    return load_users()
 
 def is_admin(user_id):
     """Check if the user is an admin"""
@@ -241,6 +253,8 @@ TEXT = {
             "🆔 Your user ID: `{}`\n"
             "💾 Storage: {}"
         ),
+        "users_list": "👥 *Registered Users* ({})\n\n{}",
+        "users_list_empty": "👥 No users registered yet.",
     },
     "am": {
         # Greetings / navigation
@@ -319,6 +333,8 @@ TEXT = {
             "🆔 የእርስዎ ተጠቃሚ መለያ: `{}`\n"
             "💾 ማከማቻ: {}"
         ),
+        "users_list": "👥 *ምዝገባ ተጠቃሚዎች* ({})\n\n{}",
+        "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
     },
 }
 
@@ -354,19 +370,32 @@ def format_gregorian(y, m, d) -> str:
 def lang_of(context: ContextTypes.DEFAULT_TYPE) -> str:
     return context.user_data.get("lang", "en")
 
+def format_user_entry(user_record: dict) -> str:
+    """Format a single user record for display"""
+    user_id = user_record.get("user_id", "N/A")
+    username = user_record.get("username", "N/A")
+    first_name = user_record.get("first_name", "N/A")
+    
+    if username != "N/A" and username:
+        return f"👤 @{username} ({first_name}) — ID: {user_id}"
+    else:
+        return f"👤 {first_name} — ID: {user_id}"
+
 #   Handlers  
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reset state and greet the user"""
     user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
     
-    # Track the user
-    is_new_user = add_user(user_id)
+    # Track the user with username and first name
+    is_new_user = add_user(user_id, username=username, first_name=first_name)
     
     # Log new users (optional - for your monitoring)
     if is_new_user:
         storage_type = "S3" if USE_S3 else "local"
-        print(f"🆕 New user started the bot: {user_id} (Total: {get_user_count()}) [{storage_type}]")
+        print(f"🆕 New user started the bot: {user_id} (@{username}) (Total: {get_user_count()}) [{storage_type}]")
     
     context.user_data.clear()
     await update.message.reply_text(TEXT["en"]["welcome"], reply_markup=LANG_KEYBOARD)
@@ -406,6 +435,36 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         TEXT[lang]["stats"].format(total_users, user_id, storage_info),
+        parse_mode="Markdown"
+    )
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all registered users (admin only)"""
+    user_id = update.effective_user.id
+    lang = lang_of(context)
+    
+    # Check if user is admin
+    if not is_admin(user_id):
+        await update.message.reply_text(TEXT[lang]["not_admin"])
+        return
+    
+    # Get all users
+    all_users = get_all_users()
+    
+    if not all_users:
+        await update.message.reply_text(TEXT[lang]["users_list_empty"])
+        return
+    
+    # Format user list
+    user_lines = []
+    for uid, record in sorted(all_users.items(), key=lambda x: int(x[0])):
+        user_lines.append(format_user_entry(record))
+    
+    user_list_text = "\n".join(user_lines)
+    
+    await update.message.reply_text(
+        TEXT[lang]["users_list"].format(len(all_users), user_list_text),
         parse_mode="Markdown"
     )
 
@@ -524,6 +583,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("users", users_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 Bot is starting… Press Ctrl+C to stop.")
