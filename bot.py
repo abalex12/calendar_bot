@@ -53,7 +53,7 @@ USERS_FILE = "users.json"
 
 def load_users():
     """Load the set of user records from S3 or local file.
-    Returns a dict: {user_id: {"username": "...", "first_name": "...", "phone_number": "...", ...}}
+    Returns a dict: {user_id: {"username": "...", "first_name": "...", ...}}
     """
     if USE_S3:
         try:
@@ -104,7 +104,7 @@ def save_users(users_dict):
         except IOError as e:
             print(f"Error saving users locally: {e}")
 
-def add_user(user_id, username=None, first_name=None, phone_number=None):
+def add_user(user_id, username=None, first_name=None):
     """Add or update a user record and return True if new user"""
     users = load_users()
     is_new = str(user_id) not in users
@@ -112,7 +112,6 @@ def add_user(user_id, username=None, first_name=None, phone_number=None):
     users[str(user_id)] = {
         "username": username or "N/A",
         "first_name": first_name or "N/A",
-        "phone_number": phone_number or "N/A",
         "user_id": user_id,
     }
     
@@ -376,14 +375,11 @@ def format_user_entry(user_record: dict) -> str:
     user_id = user_record.get("user_id", "N/A")
     username = user_record.get("username", "N/A")
     first_name = user_record.get("first_name", "N/A")
-    phone_number = user_record.get("phone_number", "N/A")
-    
-    phone_display = f" | 📱 {phone_number}" if phone_number != "N/A" else ""
     
     if username != "N/A" and username:
-        return f"👤 @{username} ({first_name}){phone_display} — ID: {user_id}"
+        return f"👤 @{username} ({first_name}) — ID: {user_id}"
     else:
-        return f"👤 {first_name}{phone_display} — ID: {user_id}"
+        return f"👤 {first_name} — ID: {user_id}"
 
 #   Handlers  
 
@@ -392,16 +388,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     first_name = update.effective_user.first_name
-    phone_number = update.effective_user.phone_number  # Get phone number automatically
     
-    # Track the user with all available data
-    is_new_user = add_user(user_id, username=username, first_name=first_name, phone_number=phone_number)
+    # Track the user with username and first name
+    is_new_user = add_user(user_id, username=username, first_name=first_name)
     
     # Log new users (optional - for your monitoring)
     if is_new_user:
         storage_type = "S3" if USE_S3 else "local"
-        phone_info = f" | 📱 {phone_number}" if phone_number else ""
-        print(f"🆕 New user started the bot: {user_id} (@{username}){phone_info} (Total: {get_user_count()}) [{storage_type}]")
+        print(f"🆕 New user started the bot: {user_id} (@{username}) (Total: {get_user_count()}) [{storage_type}]")
     
     context.user_data.clear()
     await update.message.reply_text(TEXT["en"]["welcome"], reply_markup=LANG_KEYBOARD)
@@ -445,8 +439,36 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     """List all registered users (admin only)"""
+#     user_id = update.effective_user.id
+#     lang = lang_of(context)
+    
+#     # Check if user is admin
+#     if not is_admin(user_id):
+#         await update.message.reply_text(TEXT[lang]["not_admin"])
+#         return
+    
+#     # Get all users
+#     all_users = get_all_users()
+    
+#     if not all_users:
+#         await update.message.reply_text(TEXT[lang]["users_list_empty"])
+#         return
+    
+#     # Format user list
+#     user_lines = []
+#     for uid, record in sorted(all_users.items(), key=lambda x: int(x[0])):
+#         user_lines.append(format_user_entry(record))
+    
+#     user_list_text = "\n".join(user_lines)
+    
+#     await update.message.reply_text(
+#         TEXT[lang]["users_list"].format(len(all_users), user_list_text),
+#         parse_mode="Markdown"
+#     )
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all registered users with clickable profile links and phone numbers"""
+    """List all registered users with clickable profile links"""
     user_id = update.effective_user.id
     lang = lang_of(context)
     
@@ -460,22 +482,22 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
     
-    # Format user list with clickable links and phone numbers
+    # Format user list with clickable links
     user_lines = []
     for uid, record in sorted(all_users.items(), key=lambda x: int(x[0])):
         user_id_int = int(uid)
         username = record.get("username")
         first_name = record.get("first_name", "N/A")
-        phone_number = record.get("phone_number", "N/A")
         
         # Create clickable link using deep link protocol
         if username:
+            # If has username, use t.me link (prettier)
             profile_link = f"[🔗 @{username}](https://t.me/{username})"
         else:
+            # If no username, use deep link with ID (works for anyone)
             profile_link = f"[🔗 Open Profile](tg://user?id={user_id_int})"
         
-        phone_display = f" | 📱 `{phone_number}`" if phone_number != "N/A" else ""
-        user_lines.append(f"👤 {first_name} — {profile_link}{phone_display} (ID: `{user_id_int}`)")
+        user_lines.append(f"👤 {first_name} — {profile_link} (ID: `{user_id_int}`)")
     
     user_list_text = "\n".join(user_lines)
     
