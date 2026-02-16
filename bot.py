@@ -439,27 +439,65 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     """List all registered users (admin only)"""
+#     user_id = update.effective_user.id
+#     lang = lang_of(context)
+    
+#     # Check if user is admin
+#     if not is_admin(user_id):
+#         await update.message.reply_text(TEXT[lang]["not_admin"])
+#         return
+    
+#     # Get all users
+#     all_users = get_all_users()
+    
+#     if not all_users:
+#         await update.message.reply_text(TEXT[lang]["users_list_empty"])
+#         return
+    
+#     # Format user list
+#     user_lines = []
+#     for uid, record in sorted(all_users.items(), key=lambda x: int(x[0])):
+#         user_lines.append(format_user_entry(record))
+    
+#     user_list_text = "\n".join(user_lines)
+    
+#     await update.message.reply_text(
+#         TEXT[lang]["users_list"].format(len(all_users), user_list_text),
+#         parse_mode="Markdown"
+#     )
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all registered users (admin only)"""
+    """List all registered users with clickable profile links"""
     user_id = update.effective_user.id
     lang = lang_of(context)
     
-    # Check if user is admin
     if not is_admin(user_id):
         await update.message.reply_text(TEXT[lang]["not_admin"])
         return
     
-    # Get all users
     all_users = get_all_users()
     
     if not all_users:
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
     
-    # Format user list
+    # Format user list with clickable links
     user_lines = []
     for uid, record in sorted(all_users.items(), key=lambda x: int(x[0])):
-        user_lines.append(format_user_entry(record))
+        user_id_int = int(uid)
+        username = record.get("username")
+        first_name = record.get("first_name", "N/A")
+        
+        # Create clickable link using deep link protocol
+        if username:
+            # If has username, use t.me link (prettier)
+            profile_link = f"[🔗 @{username}](https://t.me/{username})"
+        else:
+            # If no username, use deep link with ID (works for anyone)
+            profile_link = f"[🔗 Open Profile](tg://user?id={user_id_int})"
+        
+        user_lines.append(f"👤 {first_name} — {profile_link} (ID: `{user_id_int}`)")
     
     user_list_text = "\n".join(user_lines)
     
@@ -467,7 +505,6 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TEXT[lang]["users_list"].format(len(all_users), user_list_text),
         parse_mode="Markdown"
     )
-
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
