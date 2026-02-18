@@ -463,7 +463,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
 
-    # Sort by signup timestamp ascending (oldest first); missing timestamp goes last
+    # Sort by signup timestamp decending (newer first); missing timestamp goes last
     sorted_users = sorted(
         all_users.items(),
         key=lambda item: item[1].get("t", float("inf")),
