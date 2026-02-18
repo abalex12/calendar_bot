@@ -466,7 +466,8 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Sort by signup timestamp ascending (oldest first); missing timestamp goes last
     sorted_users = sorted(
         all_users.items(),
-        key=lambda item: item[1].get("t", float("inf"))
+        key=lambda item: item[1].get("t", float("inf")),
+        reverse=True
     )
 
     # Telegram message limit is 4096 chars — paginate if needed
