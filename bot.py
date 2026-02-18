@@ -397,7 +397,7 @@ def format_user_entry(uid: str, record: dict, index: int) -> str:
     else:
         link = f"[🔗 Open Profile](tg://user?id={uid})"
 
-    return f"{index}\\. {first_name} — {link}\n"
+    return f"{index}\\. {first_name} — {link}"
 
    
 # 📅 `{signup}` · ID: `{uid}
