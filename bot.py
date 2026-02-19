@@ -47,7 +47,7 @@ else:
 
 USERS_FILE = "users.json"
 
-# ─── In-memory cache to avoid re-fetching S3 on every message ───────────────
+# In-memory cache to avoid re-fetching S3 on every message
 _users_cache: dict | None = None
 _cache_dirty: bool = False
 
@@ -88,7 +88,6 @@ def load_users() -> dict:
 
 def save_users(users_dict: dict):
     """Persist users to S3 or local file with minimal payload."""
-    # Compact JSON — no indent, saves space at scale
     json_data = json.dumps({"users": users_dict}, separators=(',', ':'))
 
     if USE_S3:
@@ -112,11 +111,6 @@ def save_users(users_dict: dict):
 def add_user(user_id: int, username: str = None, first_name: str = None) -> bool:
     """
     Add a new user or silently skip existing ones.
-    Stores only the minimum needed fields:
-      - "u": username (omitted if None)
-      - "n": first_name (omitted if None)
-      - "t": Unix signup timestamp (set once, never overwritten)
-
     Returns True if this is a genuinely new user.
     """
     users = load_users()
@@ -125,7 +119,6 @@ def add_user(user_id: int, username: str = None, first_name: str = None) -> bool
     if key in users:
         return False  # Already tracked — no write needed
 
-    # Build the smallest possible record
     record: dict = {"t": int(time.time())}
     if username:
         record["u"] = username
@@ -177,10 +170,16 @@ WAITING_KEYBOARD = ReplyKeyboardMarkup(
 
 #   Month Labels  
 
-ETH_MONTHS = [
+ETH_MONTHS_AM = [
     "መስከረም", "ጥቅምት", "ኅዳር", "ታህሳስ",
     "ጥር", "የካቲት", "መጋቢት", "ሚያዝያ",
     "ግንቦት", "ሰኔ", "ሐምሌ", "ነሐሴ", "ጳጉሜ",
+]
+
+ETH_MONTHS_EN = [
+    "Meskerem", "Tikimt", "Hidar", "Tahsas",
+    "Tir", "Yekatit", "Megabit", "Miyazia",
+    "Ginbot", "Sene", "Hamle", "Nehase", "Pagume",
 ]
 
 GREG_MONTHS = [
@@ -368,7 +367,16 @@ def parse_slash_date(text: str):
 
 
 def format_ethiopian(y, m, d) -> str:
-    return f"{d} {ETH_MONTHS[m - 1]} {y} ዓ.ም"
+    am_month = ETH_MONTHS_AM[m - 1]
+    en_month = ETH_MONTHS_EN[m - 1]
+    return f"{d} {am_month} ({en_month}) {y} ዓ.ም"
+
+
+def format_ethiopian_with_gregorian(eth_y, eth_m, eth_d, greg_y, greg_m, greg_d) -> str:
+    am_month = ETH_MONTHS_AM[eth_m - 1]
+    en_month = ETH_MONTHS_EN[eth_m - 1]
+    greg_month = GREG_MONTHS[greg_m - 1]
+    return f"{eth_d} {am_month} ({en_month}) {eth_y} ዓ.ም, or {greg_d} {greg_month} {greg_y}"
 
 
 def format_gregorian(y, m, d) -> str:
@@ -385,22 +393,17 @@ def format_user_entry(uid: str, record: dict, index: int) -> str:
     first_name = record.get("n", "N/A")
     ts = record.get("t")
 
-    # Human-readable signup date
     if ts:
         signup = time.strftime("%Y-%m-%d", time.gmtime(ts))
     else:
         signup = "unknown"
 
-    # Clickable profile link
     if username:
         link = f"[🔗 @{username}](https://t.me/{username})"
     else:
         link = f"[🔗 Open Profile](tg://user?id={uid})"
 
     return f"{index}\\. {first_name} — {link}"
-
-   
-# 📅 `{signup}` · ID: `{uid}
 
 
 #   Handlers  
@@ -452,7 +455,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all registered users sorted by signup date (oldest first)."""
+    """List all registered users sorted by signup date (newest first)."""
     user_id = update.effective_user.id
     lang = lang_of(context)
 
@@ -466,14 +469,12 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
 
-    # Sort by signup timestamp decending (newer first); missing timestamp goes last
     sorted_users = sorted(
         all_users.items(),
         key=lambda item: item[1].get("t", float("-inf")),
         reverse=True
     )
 
-    # Telegram message limit is 4096 chars — paginate if needed
     MAX_CHARS = 4000
     pages = []
     current_lines = []
@@ -563,7 +564,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             g = EthiopianDateConverter.to_gregorian(y, m, d)
             await update.message.reply_text(
                 TEXT[lang]["e2g"].format(
-                    format_ethiopian(y, m, d),
+                    format_ethiopian_with_gregorian(y, m, d, g.year, g.month, g.day),
                     format_gregorian(g.year, g.month, g.day),
                 ),
                 reply_markup=CONVERT_KEYBOARD,
@@ -573,7 +574,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 TEXT[lang]["g2e"].format(
                     format_gregorian(y, m, d),
-                    format_ethiopian(ey, em, ed),
+                    format_ethiopian_with_gregorian(ey, em, ed, y, m, d),
                 ),
                 reply_markup=CONVERT_KEYBOARD,
             )
