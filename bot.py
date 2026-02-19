@@ -184,9 +184,23 @@ ETH_MONTHS_EN = [
 
 GREG_MONTHS = [
     "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "July", "August", "September", "October", "November", "December", "Pagume",
 ]
-
+ETH_TO_GREG_MONTH = {
+    1:  9,   # Meskerem  → September
+    2:  10,  # Tikimt    → October
+    3:  11,  # Hidar     → November
+    4:  12,  # Tahsas    → December
+    5:  1,   # Tir       → January
+    6:  2,   # Yekatit   → February
+    7:  3,   # Megabit   → March
+    8:  4,   # Miyazia   → April
+    9:  5,   # Ginbot    → May
+    10: 6,   # Sene      → June
+    11: 7,   # Hamle     → July
+    12: 8,   # Nehase    → August
+    13: 13,   # Pagume    → Pagume
+}
 #   All UI Text  
 
 TEXT = {
@@ -375,7 +389,7 @@ def format_ethiopian(y, m, d) -> str:
 def format_ethiopian_with_gregorian(eth_y, eth_m, eth_d, greg_y, greg_m, greg_d) -> str:
     am_month = ETH_MONTHS_AM[eth_m - 1]
     en_month = ETH_MONTHS_EN[eth_m - 1]
-    greg_month = GREG_MONTHS[greg_m - 1]
+    greg_month = GREG_MONTHS[ETH_TO_GREG_MONTH[eth_m] - 1]  
     return f"{eth_d} {am_month} ({en_month}) {eth_y} ዓ.ም, or {greg_d} {greg_month} {greg_y}"
 
 
