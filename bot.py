@@ -80,14 +80,11 @@ ETH_WEEKDAYS_AM = ["ሰኞ", "ማክሰኞ", "ረቡዕ", "ሐሙስ", "አር�
 ETH_WEEKDAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 ETH_HOLIDAYS = {
-    (1,  1):  {"en": "🎊 Ethiopian New Year (Enkutatash)",     "am": "🎊 ዕንቁጣጣሽ (የኢትዮጵያ አዲስ ዓመት)"},
-    (1,  11): {"en": "✝️ Meskel (Finding of the True Cross)",  "am": "✝️ መስቀል"},
-    (4,  29): {"en": "🕌 Timkat (Ethiopian Epiphany)",          "am": "🕌 ጥምቀት"},
-    (5,  1):  {"en": "❄️ Leddet (Ethiopian Christmas)",        "am": "❄️ ልደት (የኢትዮጵያ ገና)"},
-    (6,  29): {"en": "⚔️ Adwa Victory Day",                    "am": "⚔️ የዓድዋ ድል ቀን"},
-    (9,  1):  {"en": "🌸 Ethiopian Labour Day",                "am": "🌸 የሠራተኞች ቀን"},
-    (10, 11): {"en": "🦁 Patriots Victory Day",               "am": "🦁 የአርበኞች ቀን"},
-    (11, 11): {"en": "🌍 Downfall of the Derg",               "am": "🌍 የደርግ ውድቀት ቀን"},
+    (1,  1):  {"en": "Ethiopian New Year (Enkutatash)",    "am": "ዕንቁጣጣሽ (የኢትዮጵያ አዲስ ዓመት)"},
+    (1,  17): {"en": "Meskel (Finding of the True Cross)", "am": "መስቀል"},
+    (5,  11): {"en": "Timkat (Ethiopian Epiphany)",         "am": "ጥምቀት"},
+    (4,  29):  {"en": "Leddet (Ethiopian Christmas)",       "am": "ልደት (የኢትዮጵያ ገና)"},
+    (6,  23): {"en": "Adwa Victory Day",                   "am": "የዓድዋ ድል ቀን"},
 }
 
 # ─── User persistence ─────────────────────────────────────────────────────────
@@ -164,10 +161,11 @@ def is_admin(user_id: int) -> bool:
 # ─── Keyboards ────────────────────────────────────────────────────────────────
 #
 #  Rules:
-#   • Conversion buttons get their own full-width rows — labels never clip
-#   • Discovery features (Today, Holidays) share one row — short labels
-#   • Meta features (Help, Language) share one row — short labels
-#   • Total: 4 rows max, never 3 items in a row
+#   - Each conversion direction gets its own full-width row so the label never clips
+#   - Today + Holidays share one row (short labels)
+#   - Help + Language share one row (meta/settings)
+#   - After a result, two full-width rows so nothing is cramped
+#   - While waiting for input, only a Cancel button is shown
 
 def lang_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -208,7 +206,7 @@ def main_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
 
 
 def cancel_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
-    label = "❌  ሰርዝ / Cancel" if lang == "am" else "❌  Cancel — go back to menu"
+    label = "❌  ሰርዝ — ወደ ምናሌ ተመለስ" if lang == "am" else "❌  Cancel — back to menu"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, callback_data="action:cancel")]
     ])
@@ -217,58 +215,61 @@ def cancel_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
 def after_result_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
     if lang == "am":
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 ሌላ ቀን ቀይር",  callback_data="action:convert_again")],
-            [InlineKeyboardButton("🏠 ዋና ምናሌ",      callback_data="action:cancel")],
+            [InlineKeyboardButton("🔄  ሌላ ቀን ቀይር",  callback_data="action:convert_again")],
+            [InlineKeyboardButton("🏠  ዋና ምናሌ",      callback_data="action:cancel")],
         ])
     else:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Convert Another Date", callback_data="action:convert_again")],
-            [InlineKeyboardButton("🏠 Back to Main Menu",    callback_data="action:cancel")],
+            [InlineKeyboardButton("🔄  Convert Another Date", callback_data="action:convert_again")],
+            [InlineKeyboardButton("🏠  Back to Main Menu",    callback_data="action:cancel")],
         ])
 
 
 # ─── UI text strings ──────────────────────────────────────────────────────────
+# All messages use plain Markdown (parse_mode="Markdown") only.
+# Allowed: *bold*, _italic_, `code`, [link](url)  — nothing else.
+# No parentheses, dots, dashes, or special chars need escaping in plain Markdown.
 
 TEXT = {
     "en": {
         "welcome": (
             "👋 *Welcome to the Ethiopian Date Converter!*\n\n"
-            "I can:\n"
-            "🔁  Convert dates between Ethiopian & Gregorian calendars\n"
+            "I can help you:\n"
+            "🔁  Convert dates between Ethiopian and Gregorian calendars\n"
             "📅  Show today's date in both calendars\n"
-            "🗓  List Ethiopian public holidays\n\n"
+            "🗓  List all Ethiopian public holidays\n\n"
             "Please choose your language:"
         ),
         "choose": (
             "✅ *Language set to English.*\n\n"
-            "Choose what you'd like to do:"
+            "Choose what you would like to do:"
         ),
 
-        # ── Date input prompts — ALL CAPS instruction at the bottom ──
+        # ── Date input prompts ──
         "ask_e": (
-            "🇪🇹 *ETHIOPIAN  ➜  GREGORIAN*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📌 *ABOUT THE ETHIOPIAN CALENDAR:*\n\n"
-            "   • 13 months total\n"
-            "   • Months 1 – 12  have  30 days each\n"
-            "   • Month 13 \\(Pagume / ጳጉሜ\\)  has  5 days\n"
-            "     \\(6 days in a leap year\\)\n"
-            "   • Ethiopian year is ~7–8 years\n"
-            "     behind the Gregorian year\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⌨️  *USE YOUR KEYBOARD — TYPE THE DATE:*\n\n"
-            "   FORMAT   ➜   `YEAR / MONTH / DAY`\n\n"
-            "   EXAMPLE  ➜   `2017 / 4 / 27`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🇪🇹 *ETHIOPIAN  →  GREGORIAN CONVERSION*\n"
+            "────────────────────────────\n\n"
+            "📌 *ABOUT THE ETHIOPIAN CALENDAR*\n\n"
+            "  • 13 months total\n"
+            "  • Months 1 to 12 have 30 days each\n"
+            "  • Month 13 (Pagume / ጳጉሜ) has 5 days\n"
+            "    (6 days in a leap year)\n"
+            "  • Ethiopian year is about 7-8 years\n"
+            "    behind the Gregorian year\n\n"
+            "────────────────────────────\n\n"
+            "⌨️ *USE YOUR KEYBOARD AND TYPE THE DATE BELOW*\n\n"
+            "  FORMAT   →   `YEAR/MONTH/DAY`\n\n"
+            "  EXAMPLE  →   `2017/4/27`\n\n"
+            "────────────────────────────\n"
             "_Tap Cancel below to go back._"
         ),
         "ask_g": (
-            "🌍 *GREGORIAN  ➜  ETHIOPIAN*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⌨️  *USE YOUR KEYBOARD — TYPE THE DATE:*\n\n"
-            "   FORMAT   ➜   `YEAR / MONTH / DAY`\n\n"
-            "   EXAMPLE  ➜   `2025 / 1 / 5`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🌍 *GREGORIAN  →  ETHIOPIAN CONVERSION*\n"
+            "────────────────────────────\n\n"
+            "⌨️ *USE YOUR KEYBOARD AND TYPE THE DATE BELOW*\n\n"
+            "  FORMAT   →   `YEAR/MONTH/DAY`\n\n"
+            "  EXAMPLE  →   `2025/1/5`\n\n"
+            "────────────────────────────\n"
             "_Tap Cancel below to go back._"
         ),
 
@@ -276,98 +277,97 @@ TEXT = {
         "unrecognised_lang": "🤔 Please pick your language using the buttons below:",
         "unrecognised_mode": "🤔 Please choose an option from the menu below:",
         "unrecognised_date": (
-            "⚠️ *THAT DOESN'T LOOK LIKE A DATE*\n\n"
-            "⌨️  TYPE YOUR DATE LIKE THIS:\n\n"
-            "   FORMAT   ➜   `YEAR / MONTH / DAY`\n"
-            "   EXAMPLE  ➜   `{}`\n\n"
+            "⚠️ *THAT DOES NOT LOOK LIKE A DATE*\n\n"
+            "⌨️ TYPE YOUR DATE LIKE THIS:\n\n"
+            "  FORMAT   →   `YEAR/MONTH/DAY`\n"
+            "  EXAMPLE  →   `{}`\n\n"
             "_Tap Cancel to return to the menu._"
         ),
         "format_error": (
             "⚠️ *WRONG FORMAT — NUMBERS ONLY, SEPARATED BY /*\n\n"
-            "⌨️  TRY AGAIN:\n\n"
-            "   FORMAT   ➜   `YEAR / MONTH / DAY`\n"
-            "   EXAMPLE  ➜   `{}`\n\n"
+            "⌨️ TRY AGAIN:\n\n"
+            "  FORMAT   →   `YEAR/MONTH/DAY`\n"
+            "  EXAMPLE  →   `{}`\n\n"
             "_Tap Cancel to return to the menu._"
         ),
         "conversion_error": (
             "❌ *INVALID DATE*\n\n"
             "_{}_\n\n"
-            "⌨️  Please correct the date and try again.\n"
+            "⌨️ Please correct the date and try again.\n"
             "_Tap Cancel to return to the menu._"
         ),
 
-        # ── Results — spacious with dividers ──
+        # ── Results ──
         "e2g": (
-            "✅  *CONVERSION COMPLETE*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *ETHIOPIAN DATE*  \\(input\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *GREGORIAN DATE*  \\(result\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "✅ *CONVERSION COMPLETE*\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *ETHIOPIAN DATE* (input)\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🌍 *GREGORIAN DATE* (result)\n\n"
+            "  {}\n\n"
+            "────────────────────────────"
         ),
         "g2e": (
-            "✅  *CONVERSION COMPLETE*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *GREGORIAN DATE*  \\(input\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *ETHIOPIAN DATE*  \\(result\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "✅ *CONVERSION COMPLETE*\n"
+            "────────────────────────────\n\n"
+            "🌍 *GREGORIAN DATE* (input)\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *ETHIOPIAN DATE* (result)\n\n"
+            "  {}\n\n"
+            "────────────────────────────"
         ),
 
         # ── Today ──
         "today": (
-            "📅  *TODAY'S DATE*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *Gregorian*\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *Ethiopian*\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📆  *Day of the week:*  {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📅 *TODAY'S DATE*\n"
+            "────────────────────────────\n\n"
+            "🌍 *Gregorian*\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *Ethiopian*\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "📆 *Day of the week:*  {}\n\n"
+            "────────────────────────────\n"
             "{}"
         ),
-        "holiday_notice": "\n🎉  *TODAY IS A HOLIDAY*\n\n       {}",
+        "holiday_notice": "\n🎉 *TODAY IS A HOLIDAY*\n\n  {}",
 
         # ── Holidays list ──
         "holidays": (
-            "🗓  *ETHIOPIAN PUBLIC HOLIDAYS*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🗓 *ETHIOPIAN PUBLIC HOLIDAYS*\n"
+            "────────────────────────────\n\n"
             "{}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "────────────────────────────"
         ),
         "no_holidays": "No holidays found.",
 
         # ── Help ──
         "help": (
-            "ℹ️  *ETHIOPIAN DATE CONVERTER — HELP*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*HOW TO CONVERT A DATE:*\n\n"
-            "  1️⃣  Tap a conversion direction button\n"
-            "  2️⃣  Type your date on your keyboard:\n"
-            "       `YEAR / MONTH / DAY`\n"
-            "  3️⃣  Receive the result instantly\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*QUICK ACTIONS:*\n\n"
-            "  📅  *Today* — see today in both calendars\n"
-            "  🗓  *Holidays* — all Ethiopian public holidays\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*ETHIOPIAN CALENDAR FACTS:*\n\n"
-            "  • 13 months — months 1–12 have 30 days each\n"
-            "  • Month 13 \\(ጳጉሜ / Pagume\\) has 5 days\n"
-            "    \\(6 days in a leap year\\)\n"
-            "  • Ethiopian year is ~7–8 years behind Gregorian\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*EXAMPLE CONVERSIONS:*\n\n"
-            "  🇪🇹 `2017/4/27`  ➜  🌍 January 5, 2025\n"
-            "  🌍 `2025/1/5`   ➜  🇪🇹 27 Miyazia 2017\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*COMMANDS:*\n\n"
+            "ℹ️ *ETHIOPIAN DATE CONVERTER — HELP*\n"
+            "────────────────────────────\n\n"
+            "*HOW TO CONVERT A DATE*\n\n"
+            "  1.  Tap a conversion direction button\n"
+            "  2.  Use your keyboard to type the date:\n"
+            "      `YEAR/MONTH/DAY`\n"
+            "  3.  Receive your result instantly\n\n"
+            "────────────────────────────\n\n"
+            "*QUICK ACTIONS*\n\n"
+            "  📅  Today — see today in both calendars\n"
+            "  🗓  Holidays — all Ethiopian public holidays\n\n"
+            "────────────────────────────\n\n"
+            "*ETHIOPIAN CALENDAR FACTS*\n\n"
+            "  • 13 months — months 1 to 12 have 30 days each\n"
+            "  • Month 13 (Pagume) has 5 days (6 in a leap year)\n"
+            "  • Ethiopian year is about 7-8 years behind Gregorian\n\n"
+            "────────────────────────────\n\n"
+            "*EXAMPLE CONVERSIONS*\n\n"
+            "  🇪🇹 `2017/4/27`  →  🌍 January 5, 2025\n"
+            "  🌍 `2025/1/5`   →  🇪🇹 27 Miyazia 2017\n\n"
+            "────────────────────────────\n\n"
+            "*COMMANDS*\n\n"
             "  /start  — restart the bot\n"
             "  /help   — show this message\n"
             "  /today  — today's date in both calendars"
@@ -382,7 +382,7 @@ TEXT = {
             "🆔 Your user ID: `{}`\n"
             "💾 Storage: {}"
         ),
-        "users_list":       "👥 *Registered Users* \\({}\\) — newest first\n\n{}",
+        "users_list":       "👥 *Registered Users* ({}) — newest first\n\n{}",
         "users_list_empty": "👥 No users registered yet.",
     },
 
@@ -401,28 +401,27 @@ TEXT = {
         ),
 
         "ask_e": (
-            "🇪🇹 *ኢትዮጵያ  ➜  ግሪጎሪያን*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📌 *ስለ ኢትዮጵያ ካላንደር:*\n\n"
-            "   • 13 ወሮች አሉ\n"
-            "   • ወር 1 – 12  እያንዳንዳቸው  30 ቀናት\n"
-            "   • ወር 13 \\(ጳጉሜ\\)  5 ቀናት\n"
-            "     \\(ዘመነ ሉቃስ 6 ቀናት\\)\n"
-            "   • የኢትዮጵያ ዓ\\.ም ከግሪጎሪያን ~7–8 ዓመት ወደ ኋላ\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⌨️  *ቁልፍ ሰሌዳዎን ይጠቀሙ — ቀን ያስገቡ:*\n\n"
-            "   ቅጽ    ➜   `ዓ.ም / ወር / ቀን`\n\n"
-            "   ምሳሌ   ➜   `2017 / 4 / 27`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🇪🇹 *ኢትዮጵያ  →  ግሪጎሪያን ቀን ለወጥ*\n"
+            "────────────────────────────\n\n"
+            "📌 *ስለ ኢትዮጵያ ካላንደር*\n\n"
+            "  • 13 ወሮች አሉ\n"
+            "  • ወር 1 እስከ 12 እያንዳንዳቸው 30 ቀናት\n"
+            "  • ወር 13 (ጳጉሜ) 5 ቀናት (ዘመነ ሉቃስ 6)\n"
+            "  • የኢትዮጵያ ዓ.ም ከግሪጎሪያን ~7-8 ዓመት ወደ ኋላ\n\n"
+            "────────────────────────────\n\n"
+            "⌨️ *ቁልፍ ሰሌዳዎን ይጠቀሙ — ቀን ያስገቡ*\n\n"
+            "  ቅጽ    →   `ዓ.ም/ወር/ቀን`\n\n"
+            "  ምሳሌ   →   `2017/4/27`\n\n"
+            "────────────────────────────\n"
             "_ለቀደም ለመመለስ ሰርዝ ይጫኑ።_"
         ),
         "ask_g": (
-            "🌍 *ግሪጎሪያን  ➜  ኢትዮጵያ*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⌨️  *ቁልፍ ሰሌዳዎን ይጠቀሙ — ቀን ያስገቡ:*\n\n"
-            "   ቅጽ    ➜   `ዓ.ም / ወር / ቀን`\n\n"
-            "   ምሳሌ   ➜   `2025 / 1 / 5`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🌍 *ግሪጎሪያን  →  ኢትዮጵያ ቀን ለወጥ*\n"
+            "────────────────────────────\n\n"
+            "⌨️ *ቁልፍ ሰሌዳዎን ይጠቀሙ — ቀን ያስገቡ*\n\n"
+            "  ቅጽ    →   `ዓ.ም/ወር/ቀን`\n\n"
+            "  ምሳሌ   →   `2025/1/5`\n\n"
+            "────────────────────────────\n"
             "_ለቀደም ለመመለስ ሰርዝ ይጫኑ።_"
         ),
 
@@ -430,87 +429,87 @@ TEXT = {
         "unrecognised_mode": "🤔 ከታቹ ያሉ አዝራሮችን ይምረጡ:",
         "unrecognised_date": (
             "⚠️ *ያስገቡት ቀን አይደለም*\n\n"
-            "⌨️  ቀኑን እንደዚህ ያስገቡ:\n\n"
-            "   ቅጽ    ➜   `ዓ.ም / ወር / ቀን`\n"
-            "   ምሳሌ   ➜   `{}`\n\n"
+            "⌨️ ቀኑን እንደዚህ ያስገቡ:\n\n"
+            "  ቅጽ    →   `ዓ.ም/ወር/ቀን`\n"
+            "  ምሳሌ   →   `{}`\n\n"
             "_ለቀደም ለመመለስ ሰርዝ ይጫኑ።_"
         ),
         "format_error": (
             "⚠️ *ቅጹ ተሳስቷል — ቁጥሮች ብቻ፣ በ / ይለዩ*\n\n"
-            "⌨️  እንደገና ሞክሩ:\n\n"
-            "   ቅጽ    ➜   `ዓ.ም / ወር / ቀን`\n"
-            "   ምሳሌ   ➜   `{}`\n\n"
+            "⌨️ እንደገና ሞክሩ:\n\n"
+            "  ቅጽ    →   `ዓ.ም/ወር/ቀን`\n"
+            "  ምሳሌ   →   `{}`\n\n"
             "_ለቀደም ለመመለስ ሰርዝ ይጫኑ።_"
         ),
         "conversion_error": (
             "❌ *ቀኑ ልክ አይደለም*\n\n"
             "_{}_\n\n"
-            "⌨️  ቀኑን አርመው እንደገና ሞክሩ።\n"
+            "⌨️ ቀኑን አርመው እንደገና ሞክሩ።\n"
             "_ለቀደም ለመመለስ ሰርዝ ይጫኑ።_"
         ),
 
         "e2g": (
-            "✅  *ቀን ተቀይሯል*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *የኢትዮጵያ ቀን*  \\(ያስገቡት\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *የግሪጎሪያን ቀን*  \\(ውጤት\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "✅ *ቀን ተቀይሯል*\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *የኢትዮጵያ ቀን* (ያስገቡት)\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🌍 *የግሪጎሪያን ቀን* (ውጤት)\n\n"
+            "  {}\n\n"
+            "────────────────────────────"
         ),
         "g2e": (
-            "✅  *ቀን ተቀይሯል*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *የግሪጎሪያን ቀን*  \\(ያስገቡት\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *የኢትዮጵያ ቀን*  \\(ውጤት\\)\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "✅ *ቀን ተቀይሯል*\n"
+            "────────────────────────────\n\n"
+            "🌍 *የግሪጎሪያን ቀን* (ያስገቡት)\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *የኢትዮጵያ ቀን* (ውጤት)\n\n"
+            "  {}\n\n"
+            "────────────────────────────"
         ),
 
         "today": (
-            "📅  *ዛሬ*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🌍  *ግሪጎሪያን*\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🇪🇹  *ኢትዮጵያ*\n\n"
-            "       {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📆  *የሳምንቱ ቀን:*  {}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📅 *ዛሬ*\n"
+            "────────────────────────────\n\n"
+            "🌍 *ግሪጎሪያን*\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "🇪🇹 *ኢትዮጵያ*\n\n"
+            "  {}\n\n"
+            "────────────────────────────\n\n"
+            "📆 *የሳምንቱ ቀን:*  {}\n\n"
+            "────────────────────────────\n"
             "{}"
         ),
-        "holiday_notice": "\n🎉  *ዛሬ በዓል ነው*\n\n       {}",
+        "holiday_notice": "\n🎉 *ዛሬ በዓል ነው*\n\n  {}",
 
         "holidays": (
-            "🗓  *የኢትዮጵያ ብሔራዊ በዓሎች*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🗓 *የኢትዮጵያ ብሔራዊ በዓሎች*\n"
+            "────────────────────────────\n\n"
             "{}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "────────────────────────────"
         ),
         "no_holidays": "በዓሎች አልተገኙም።",
 
         "help": (
-            "ℹ️  *የኢትዮጵያ ቀን መቀየሪያ — እገዛ*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*አጠቃቀም:*\n\n"
-            "  1️⃣  የቀን ለወጥ አቅጣጫ ይምረጡ\n"
-            "  2️⃣  ቁልፍ ሰሌዳዎን ተጠቅመው ቀን ያስገቡ:\n"
-            "       `ዓ.ም / ወር / ቀን`\n"
-            "  3️⃣  የተቀየረ ቀን ይቀበሉ\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*ፈጣን አማራጮች:*\n\n"
-            "  📅  *ዛሬ* — ዛሬን ቀን ይመልከቱ\n"
-            "  🗓  *በዓሎች* — ሁሉም ብሔራዊ በዓሎች\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*ምሳሌዎች:*\n\n"
-            "  🇪🇹 `2017/4/27`  ➜  🌍 January 5, 2025\n"
-            "  🌍 `2025/1/5`   ➜  🇪🇹 27 ሚያዝያ 2017\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*ትዕዛዞች:*\n\n"
+            "ℹ️ *የኢትዮጵያ ቀን መቀየሪያ — እገዛ*\n"
+            "────────────────────────────\n\n"
+            "*አጠቃቀም*\n\n"
+            "  1.  የቀን ለወጥ አቅጣጫ ይምረጡ\n"
+            "  2.  ቁልፍ ሰሌዳዎን ተጠቅመው ቀን ያስገቡ:\n"
+            "      `ዓ.ም/ወር/ቀን`\n"
+            "  3.  የተቀየረ ቀን ይቀበሉ\n\n"
+            "────────────────────────────\n\n"
+            "*ፈጣን አማራጮች*\n\n"
+            "  📅  ዛሬ — ዛሬን ቀን ይመልከቱ\n"
+            "  🗓  በዓሎች — ሁሉም ብሔራዊ በዓሎች\n\n"
+            "────────────────────────────\n\n"
+            "*ምሳሌዎች*\n\n"
+            "  🇪🇹 `2017/4/27`  →  🌍 January 5, 2025\n"
+            "  🌍 `2025/1/5`   →  🇪🇹 27 ሚያዝያ 2017\n\n"
+            "────────────────────────────\n\n"
+            "*ትዕዛዞች*\n\n"
             "  /start  — ዳግም ጀምር\n"
             "  /help   — ይህን አሳይ\n"
             "  /today  — ዛሬ"
@@ -525,7 +524,7 @@ TEXT = {
             "🆔 የእርስዎ ተጠቃሚ መለያ: `{}`\n"
             "💾 ማከማቻ: {}"
         ),
-        "users_list":       "👥 *ምዝገባ ተጠቃሚዎች* \\({}\\) — በምዝገባ ቅደም ተከተል\n\n{}",
+        "users_list":       "👥 *ምዝገባ ተጠቃሚዎች* ({}) — በምዝገባ ቅደም ተከተል\n\n{}",
         "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
     },
 }
@@ -561,7 +560,7 @@ def format_gregorian(y: int, m: int, d: int) -> str:
 
 
 def get_today_both_calendars() -> dict:
-    now  = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     gy, gm, gd = now.year, now.month, now.day
     ey, em, ed = EthiopianDateConverter.to_ethiopian(gy, gm, gd)
     weekday_idx = now.weekday()
@@ -589,9 +588,9 @@ def build_holidays_text(lang: str) -> str:
         eth_month_am = ETH_MONTHS_AM[em - 1]
         name = names.get(lang, names["en"])
         if lang == "am":
-            lines.append(f"{name}\n       📌 {ed} {eth_month_am} ({eth_month_en})")
+            lines.append(f"🎉 *{name}*\n  📌 {ed} {eth_month_am} ({eth_month_en})")
         else:
-            lines.append(f"{name}\n       📌 {ed} {eth_month_en}")
+            lines.append(f"🎉 *{name}*\n  📌 {ed} {eth_month_en}")
     return "\n\n".join(lines) if lines else TEXT[lang]["no_holidays"]
 
 
@@ -607,7 +606,15 @@ def format_user_entry(uid: str, record: dict, index: int) -> str:
         if username
         else f"[🔗 Open Profile](tg://user?id={uid})"
     )
-    return f"{index}\\. {first_name} — {link}"
+    return f"{index}. {first_name} — {link}"
+
+
+# ─── Shared reply helper ──────────────────────────────────────────────────────
+
+async def reply(update: Update, text: str, keyboard: InlineKeyboardMarkup):
+    """Send a plain-Markdown message. Works from both command and callback contexts."""
+    msg = update.message if update.message else update.callback_query.message
+    await msg.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
@@ -618,15 +625,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_new:
         print(f"New user: {user.id} (@{user.username}) — Total: {get_user_count()}")
     context.user_data.clear()
-    await update.message.reply_text(
-        TEXT["en"]["welcome"], parse_mode="MarkdownV2", reply_markup=lang_keyboard()
-    )
+    await reply(update, TEXT["en"]["welcome"], lang_keyboard())
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = lang_of(context)
     kb   = main_keyboard(lang) if "lang" in context.user_data else lang_keyboard()
-    await update.message.reply_text(TEXT[lang]["help"], parse_mode="MarkdownV2", reply_markup=kb)
+    await reply(update, TEXT[lang]["help"], kb)
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -639,45 +644,36 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today["greg_str"], today["eth_str"], weekday, holiday_line
     )
     kb = main_keyboard(lang) if "lang" in context.user_data else lang_keyboard()
-    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=kb)
+    await reply(update, text, kb)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang    = lang_of(context)
     if not is_admin(user_id):
-        await update.message.reply_text(TEXT[lang]["not_admin"])
+        await reply(update, TEXT[lang]["not_admin"], main_keyboard(lang))
         return
-    storage = f"S3 ({AWS_BUCKET})" if USE_S3 else "Local (⚠️ not persistent)"
-    await update.message.reply_text(
-        TEXT[lang]["stats"].format(get_user_count(), user_id, storage),
-        parse_mode="MarkdownV2",
-    )
+    storage = f"S3 ({AWS_BUCKET})" if USE_S3 else "Local (not persistent)"
+    await reply(update, TEXT[lang]["stats"].format(get_user_count(), user_id, storage), main_keyboard(lang))
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang    = lang_of(context)
     if not is_admin(user_id):
-        await update.message.reply_text(TEXT[lang]["not_admin"])
+        await reply(update, TEXT[lang]["not_admin"], main_keyboard(lang))
         return
 
     all_users = get_all_users()
     if not all_users:
-        await update.message.reply_text(TEXT[lang]["users_list_empty"])
+        await reply(update, TEXT[lang]["users_list_empty"], main_keyboard(lang))
         return
 
     sorted_users = sorted(
-        all_users.items(),
-        key=lambda item: item[1].get("t", 0),
-        reverse=True,
+        all_users.items(), key=lambda item: item[1].get("t", 0), reverse=True
     )
 
-    MAX_CHARS     = 4000
-    pages         = []
-    current_lines = []
-    current_len   = 0
-
+    MAX_CHARS, pages, current_lines, current_len = 4000, [], [], 0
     for idx, (uid, record) in enumerate(sorted_users, start=1):
         line = format_user_entry(uid, record, idx)
         if current_len + len(line) > MAX_CHARS and current_lines:
@@ -692,11 +688,9 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, page in enumerate(pages):
         header = TEXT[lang]["users_list"].format(total, "")
         if len(pages) > 1:
-            header = header.rstrip() + f" _\\(page {i+1}/{len(pages)}\\)_\n\n"
+            header = header.rstrip() + f" (page {i+1}/{len(pages)})\n\n"
         await update.message.reply_text(
-            header + page,
-            parse_mode="MarkdownV2",
-            disable_web_page_preview=True,
+            header + page, parse_mode="Markdown", disable_web_page_preview=True
         )
 
 
@@ -705,15 +699,15 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data  = query.data
-    lang  = lang_of(context)
+    data = query.data
+    lang = lang_of(context)
 
     if data.startswith("lang:"):
         chosen = data.split(":")[1]
         context.user_data["lang"] = chosen
         lang = chosen
         await query.message.reply_text(
-            TEXT[lang]["choose"], parse_mode="MarkdownV2", reply_markup=main_keyboard(lang)
+            TEXT[lang]["choose"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
         )
         return
 
@@ -722,7 +716,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode"] = mode
         prompt = TEXT[lang]["ask_e"] if mode == "E2G" else TEXT[lang]["ask_g"]
         await query.message.reply_text(
-            prompt, parse_mode="MarkdownV2", reply_markup=cancel_keyboard(lang)
+            prompt, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
         )
         return
 
@@ -735,21 +729,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             today["greg_str"], today["eth_str"], weekday, holiday_line
         )
         await query.message.reply_text(
-            text, parse_mode="MarkdownV2", reply_markup=main_keyboard(lang)
+            text, parse_mode="Markdown", reply_markup=main_keyboard(lang)
         )
         return
 
     if data == "action:holidays":
         await query.message.reply_text(
             TEXT[lang]["holidays"].format(build_holidays_text(lang)),
-            parse_mode="MarkdownV2",
+            parse_mode="Markdown",
             reply_markup=main_keyboard(lang),
         )
         return
 
     if data == "action:help":
         await query.message.reply_text(
-            TEXT[lang]["help"], parse_mode="MarkdownV2", reply_markup=main_keyboard(lang)
+            TEXT[lang]["help"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
         )
         return
 
@@ -763,7 +757,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "action:cancel":
         context.user_data.pop("mode", None)
         await query.message.reply_text(
-            TEXT[lang]["cancelled"], parse_mode="MarkdownV2", reply_markup=main_keyboard(lang)
+            TEXT[lang]["cancelled"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
         )
         return
 
@@ -772,7 +766,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode"] = mode
         prompt = TEXT[lang]["ask_e"] if mode == "E2G" else TEXT[lang]["ask_g"]
         await query.message.reply_text(
-            prompt, parse_mode="MarkdownV2", reply_markup=cancel_keyboard(lang)
+            prompt, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
         )
         return
 
@@ -784,30 +778,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = lang_of(context)
 
     if "lang" not in context.user_data:
-        await update.message.reply_text(
-            TEXT["en"]["unrecognised_lang"],
-            parse_mode="MarkdownV2",
-            reply_markup=lang_keyboard(),
-        )
+        await reply(update, TEXT["en"]["unrecognised_lang"], lang_keyboard())
         return
 
     if "mode" not in context.user_data:
-        await update.message.reply_text(
-            TEXT[lang]["unrecognised_mode"],
-            parse_mode="MarkdownV2",
-            reply_markup=main_keyboard(lang),
-        )
+        await reply(update, TEXT[lang]["unrecognised_mode"], main_keyboard(lang))
         return
 
     mode    = context.user_data["mode"]
     example = EXAMPLE_DATE[mode]
 
     if not looks_like_date(text):
-        await update.message.reply_text(
-            TEXT[lang]["unrecognised_date"].format(example),
-            parse_mode="MarkdownV2",
-            reply_markup=cancel_keyboard(lang),
-        )
+        await reply(update, TEXT[lang]["unrecognised_date"].format(example), cancel_keyboard(lang))
         return
 
     try:
@@ -817,26 +799,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             g        = EthiopianDateConverter.to_gregorian(y, m, d)
             eth_str  = format_ethiopian(y, m, d)
             greg_str = format_gregorian(g.year, g.month, g.day)
-            reply    = TEXT[lang]["e2g"].format(eth_str, greg_str)
+            result   = TEXT[lang]["e2g"].format(eth_str, greg_str)
             holiday  = get_holiday_for_eth_date(m, d, lang)
         else:
             ey, em, ed = EthiopianDateConverter.to_ethiopian(y, m, d)
             greg_str   = format_gregorian(y, m, d)
             eth_str    = format_ethiopian(ey, em, ed)
-            reply      = TEXT[lang]["g2e"].format(greg_str, eth_str)
+            result     = TEXT[lang]["g2e"].format(greg_str, eth_str)
             holiday    = get_holiday_for_eth_date(em, ed, lang)
 
         if holiday:
-            reply += TEXT[lang]["holiday_notice"].format(holiday)
+            result += TEXT[lang]["holiday_notice"].format(holiday)
 
         context.user_data["last_mode"] = mode
         context.user_data.pop("mode", None)
 
-        await update.message.reply_text(
-            reply,
-            parse_mode="MarkdownV2",
-            reply_markup=after_result_keyboard(lang),
-        )
+        await reply(update, result, after_result_keyboard(lang))
 
     except ValueError as e:
         msg = str(e)
@@ -845,18 +823,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if "3 parts" in msg or "must be numbers" in msg
             else TEXT[lang]["conversion_error"].format(msg)
         )
-        await update.message.reply_text(
-            error, parse_mode="MarkdownV2", reply_markup=cancel_keyboard(lang)
-        )
+        await reply(update, error, cancel_keyboard(lang))
 
     except Exception as e:
-        await update.message.reply_text(
+        await reply(
+            update,
             TEXT[lang]["conversion_error"].format(f"Unexpected error: {e}"),
-            parse_mode="MarkdownV2",
-            reply_markup=cancel_keyboard(lang),
+            cancel_keyboard(lang),
         )
 
 
+# ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
