@@ -1,11 +1,15 @@
 import os
 import json
 import time
-from telegram import Update, ReplyKeyboardMarkup
+import logging
+from datetime import datetime, timezone
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -14,117 +18,145 @@ from converter import EthiopianDateConverter
 import boto3
 from botocore.exceptions import ClientError
 
-#   Setup  
+# ─── Logging ──────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+# ─── Setup ────────────────────────────────────────────────────────────────────
 
 load_dotenv()
-BOT_TOKEN = os.getenv("T_BOT_TOKEN")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 
-# S3 Configuration
+BOT_TOKEN        = os.getenv("T_BOT_TOKEN")
+ADMIN_USER_ID    = os.getenv("ADMIN_USER_ID")
 AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+AWS_ACCESS_KEY   = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_KEY   = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_BUCKET       = os.getenv("AWS_S3_BUCKET_NAME")
+AWS_REGION       = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 
 if not BOT_TOKEN:
-    raise RuntimeError("T_BOT_TOKEN not set")
+    raise RuntimeError("T_BOT_TOKEN not set in environment")
 
-USE_S3 = all([AWS_ENDPOINT_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET_NAME])
+USE_S3 = all([AWS_ENDPOINT_URL, AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET])
 
+s3_client = None
 if USE_S3:
     s3_client = boto3.client(
-        's3',
+        "s3",
         endpoint_url=AWS_ENDPOINT_URL,
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_DEFAULT_REGION
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_KEY,
+        region_name=AWS_REGION,
     )
-    print(f"✅ S3 storage configured: {AWS_S3_BUCKET_NAME}")
+    logger.info(f"S3 storage configured: {AWS_BUCKET}")
 else:
-    print("⚠️  S3 not configured - using local file storage (not persistent on Railway!)")
-    s3_client = None
+    logger.warning("S3 not configured — using local file storage (not persistent on Railway!)")
 
-USERS_FILE = "users.json"
+USERS_FILE   = "users.json"
+_users_cache = None
 
-# In-memory cache to avoid re-fetching S3 on every message
-_users_cache: dict | None = None
-_cache_dirty: bool = False
+# ─── Month data ───────────────────────────────────────────────────────────────
 
-#   User Functions  
+ETH_MONTHS_AM = [
+    "መስከረም", "ጥቅምት", "ኅዳር",  "ታህሳስ",
+    "ጥር",    "የካቲት", "መጋቢት", "ሚያዝያ",
+    "ግንቦት",  "ሰኔ",   "ሐምሌ",  "ነሐሴ", "ጳጉሜ",
+]
+
+ETH_MONTHS_EN = [
+    "Meskerem", "Tikimt",  "Hidar",   "Tahsas",
+    "Tir",      "Yekatit", "Megabit", "Miyazia",
+    "Ginbot",   "Sene",    "Hamle",   "Nehase", "Pagume",
+]
+
+GREG_MONTHS = [
+    "January", "February", "March",     "April",   "May",      "June",
+    "July",    "August",   "September", "October", "November", "December",
+]
+
+ETH_TO_GREG_MONTH_NAME = {
+    1:  "September", 2:  "October",  3:  "November", 4:  "December",
+    5:  "January",   6:  "February", 7:  "March",     8:  "April",
+    9:  "May",       10: "June",     11: "July",      12: "August",
+    13: "Pagume",
+}
+
+ETH_WEEKDAYS_AM = ["ሰኞ", "ማክሰኞ", "ረቡዕ", "ሐሙስ", "አርብ", "ቅዳሜ", "እሁድ"]
+ETH_WEEKDAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+# ─── Ethiopian holidays (fixed, month/day in Ethiopian calendar) ──────────────
+# Format: (eth_month, eth_day): {"en": "...", "am": "..."}
+ETH_HOLIDAYS = {
+    (1,  1):  {"en": "🎊 Ethiopian New Year (Enkutatash)",    "am": "🎊 ዕንቁጣጣሽ (የኢትዮጵያ አዲስ ዓመት)"},
+    (1,  11): {"en": "✝️ Meskel (Finding of the True Cross)", "am": "✝️ መስቀል"},
+    (4,  29): {"en": "🕌 Timkat (Ethiopian Epiphany)",         "am": "🕌 ጥምቀት"},
+    (5,  1):  {"en": "❄️ Leddet (Ethiopian Christmas)",       "am": "❄️ ልደት (የኢትዮጵያ ገና)"},
+    (6,  29): {"en": "⚔️ Adwa Victory Day",                   "am": "⚔️ የዓድዋ ድል ቀን"},
+    (9,  1):  {"en": "🌸 Ethiopian Labour Day",               "am": "🌸 የሠራተኞች ቀን"},
+    (10, 11): {"en": "🦁 Patriots Victory Day",              "am": "🦁 የአርበኞች ቀን"},
+    (11, 11): {"en": "🌍 Downfall of the Derg",              "am": "🌍 የደርግ ውድቀት ቀን"},
+}
+
+# ─── User persistence ─────────────────────────────────────────────────────────
 
 def load_users() -> dict:
-    """Load users from cache, S3, or local file. Returns dict keyed by str(user_id)."""
     global _users_cache
-
     if _users_cache is not None:
-        return _users_cache  # Serve from memory — no S3 call
+        return _users_cache
 
     if USE_S3:
         try:
-            response = s3_client.get_object(Bucket=AWS_S3_BUCKET_NAME, Key=USERS_FILE)
-            raw = json.loads(response['Body'].read().decode('utf-8'))
-            _users_cache = raw.get("users", {})
+            response = s3_client.get_object(Bucket=AWS_BUCKET, Key=USERS_FILE)
+            _users_cache = json.loads(response["Body"].read().decode()).get("users", {})
         except ClientError as e:
-            _users_cache = {} if e.response['Error']['Code'] == 'NoSuchKey' else {}
-            if e.response['Error']['Code'] != 'NoSuchKey':
-                print(f"Error loading users from S3: {e}")
+            if e.response["Error"]["Code"] != "NoSuchKey":
+                logger.error(f"S3 read error: {e}")
+            _users_cache = {}
         except Exception as e:
-            print(f"Unexpected error loading users from S3: {e}")
+            logger.error(f"Unexpected S3 error: {e}")
             _users_cache = {}
     else:
-        if os.path.exists(USERS_FILE):
-            try:
-                with open(USERS_FILE, "r") as f:
-                    raw = json.load(f)
-                    _users_cache = raw.get("users", {})
-            except (json.JSONDecodeError, IOError):
-                _users_cache = {}
-        else:
+        try:
+            with open(USERS_FILE) as f:
+                _users_cache = json.load(f).get("users", {})
+        except (FileNotFoundError, json.JSONDecodeError):
             _users_cache = {}
 
     return _users_cache
 
 
-def save_users(users_dict: dict):
-    """Persist users to S3 or local file with minimal payload."""
-    json_data = json.dumps({"users": users_dict}, separators=(',', ':'))
-
+def save_users(users: dict) -> None:
+    payload = json.dumps({"users": users}, separators=(",", ":")).encode()
     if USE_S3:
         try:
             s3_client.put_object(
-                Bucket=AWS_S3_BUCKET_NAME,
-                Key=USERS_FILE,
-                Body=json_data.encode('utf-8'),
-                ContentType='application/json'
+                Bucket=AWS_BUCKET, Key=USERS_FILE,
+                Body=payload, ContentType="application/json",
             )
         except Exception as e:
-            print(f"Error saving users to S3: {e}")
+            logger.error(f"S3 write error: {e}")
     else:
         try:
             with open(USERS_FILE, "w") as f:
-                f.write(json_data)
+                f.write(payload.decode())
         except IOError as e:
-            print(f"Error saving users locally: {e}")
+            logger.error(f"Local write error: {e}")
 
 
 def add_user(user_id: int, username: str = None, first_name: str = None) -> bool:
-    """
-    Add a new user or silently skip existing ones.
-    Returns True if this is a genuinely new user.
-    """
     users = load_users()
-    key = str(user_id)
-
+    key   = str(user_id)
     if key in users:
-        return False  # Already tracked — no write needed
-
-    record: dict = {"t": int(time.time())}
+        return False
+    record = {"t": int(time.time())}
     if username:
         record["u"] = username
     if first_name:
         record["n"] = first_name
-
     users[key] = record
     save_users(users)
     return True
@@ -139,262 +171,317 @@ def get_all_users() -> dict:
 
 
 def is_admin(user_id: int) -> bool:
-    if not ADMIN_USER_ID:
-        return False
-    return str(user_id) == str(ADMIN_USER_ID)
+    return bool(ADMIN_USER_ID) and str(user_id) == str(ADMIN_USER_ID)
 
 
-#   Keyboards  
+# ─── Keyboards ────────────────────────────────────────────────────────────────
 
-LANG_KEYBOARD = ReplyKeyboardMarkup(
-    [["English 🇬🇧", "አማርኛ 🇪🇹"]],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
+def lang_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("English 🇬🇧", callback_data="lang:en"),
+            InlineKeyboardButton("አማርኛ 🇪🇹",    callback_data="lang:am"),
+        ]
+    ])
 
-CONVERT_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["🇪🇹 Ethiopian → 🌍 Gregorian", "🌍 Gregorian → 🇪🇹 Ethiopian"],
-        ["🌐 Change Language"],
-    ],
-    resize_keyboard=True,
-)
 
-WAITING_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["🇪🇹 Ethiopian → 🌍 Gregorian", "🌍 Gregorian → 🇪🇹 Ethiopian"],
-        ["🌐 Change Language"],
-    ],
-    resize_keyboard=True,
-)
+def main_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
+    if lang == "am":
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🇪🇹 ኢትዮ → 🌍 ግሪጎ",  callback_data="mode:E2G"),
+                InlineKeyboardButton("🌍 ግሪጎ → 🇪🇹 ኢትዮ",  callback_data="mode:G2E"),
+            ],
+            [
+                InlineKeyboardButton("📅 ዛሬ",              callback_data="action:today"),
+                InlineKeyboardButton("🗓 በዓሎች",            callback_data="action:holidays"),
+                InlineKeyboardButton("ℹ️ እገዛ",             callback_data="action:help"),
+            ],
+            [
+                InlineKeyboardButton("🌐 ቋንቋ ይቀይሩ",       callback_data="action:changelang"),
+            ],
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🇪🇹 Ethiopian → 🌍 Gregorian", callback_data="mode:E2G"),
+                InlineKeyboardButton("🌍 Gregorian → 🇪🇹 Ethiopian", callback_data="mode:G2E"),
+            ],
+            [
+                InlineKeyboardButton("📅 Today",            callback_data="action:today"),
+                InlineKeyboardButton("🗓 Holidays",         callback_data="action:holidays"),
+                InlineKeyboardButton("ℹ️ Help",             callback_data="action:help"),
+            ],
+            [
+                InlineKeyboardButton("🌐 Change Language",  callback_data="action:changelang"),
+            ],
+        ])
 
-#   Month Labels  
 
-ETH_MONTHS_AM = [
-    "መስከረም", "ጥቅምት", "ኅዳር", "ታህሳስ",
-    "ጥር", "የካቲት", "መጋቢት", "ሚያዝያ",
-    "ግንቦት", "ሰኔ", "ሐምሌ", "ነሐሴ", "ጳጉሜ",
-]
+def cancel_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
+    label = "❌ ሰርዝ" if lang == "am" else "❌ Cancel"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="action:cancel")]
+    ])
 
-ETH_MONTHS_EN = [
-    "Meskerem", "Tikimt", "Hidar", "Tahsas",
-    "Tir", "Yekatit", "Megabit", "Miyazia",
-    "Ginbot", "Sene", "Hamle", "Nehase", "Pagume",
-]
 
-GREG_MONTHS = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December", "Pagume",
-]
-ETH_TO_GREG_MONTH = {
-    1:  9,   # Meskerem  → September
-    2:  10,  # Tikimt    → October
-    3:  11,  # Hidar     → November
-    4:  12,  # Tahsas    → December
-    5:  1,   # Tir       → January
-    6:  2,   # Yekatit   → February
-    7:  3,   # Megabit   → March
-    8:  4,   # Miyazia   → April
-    9:  5,   # Ginbot    → May
-    10: 6,   # Sene      → June
-    11: 7,   # Hamle     → July
-    12: 8,   # Nehase    → August
-    13: 13,   # Pagume    → Pagume
-}
-#   All UI Text  
+# ─── UI strings ───────────────────────────────────────────────────────────────
 
 TEXT = {
     "en": {
         "welcome": (
-            "👋 Welcome to the Ethiopian Date Converter!\n\n"
-            "I can convert dates between the Ethiopian and Gregorian calendars.\n\n"
+            "👋 *Welcome to the Ethiopian Date Converter!*\n\n"
+            "I can convert dates between the Ethiopian and Gregorian calendars, "
+            "show today's date in both calendars, and list upcoming Ethiopian holidays.\n\n"
             "Please choose your language:"
         ),
-        "choose": "✅ Language set to English.\n\nChoose a conversion direction:",
+        "choose": (
+            "✅ Language set to *English*.\n\n"
+            "Use the buttons below to get started:"
+        ),
         "ask_e": (
-            "📥 Enter an Ethiopian date in this format:\n"
-            "YYYY/MM/DD\n\n"
-            "📌 Example: 2017/4/27\n\n"
-            "💡 The Ethiopian calendar has 13 months.\n"
-            "Months 1–12 have 30 days each.\n"
-            "Month 13 (ጳጉሜ / Pagume) has 5 days, or 6 in a leap year."
+            "📥 *Enter an Ethiopian date:*\n\n"
+            "Format: `YYYY/MM/DD`\n"
+            "Example: `2017/4/27`\n\n"
+            "─────────────────\n"
+            "💡 *Ethiopian calendar facts:*\n"
+            "• 13 months in total\n"
+            "• Months 1–12 have *30 days* each\n"
+            "• Month 13 (ጳጉሜ/Pagume) has *5 days* (6 in a leap year)\n"
+            "• The Ethiopian year is roughly *7–8 years behind* the Gregorian year\n\n"
+            "Type your date or press Cancel to go back."
         ),
         "ask_g": (
-            "📥 Enter a Gregorian date in this format:\n"
-            "YYYY/MM/DD\n\n"
-            "📌 Example: 2025/1/5"
+            "📥 *Enter a Gregorian date:*\n\n"
+            "Format: `YYYY/MM/DD`\n"
+            "Example: `2025/1/5`\n\n"
+            "Type your date or press Cancel to go back."
         ),
-        "unrecognised_lang": (
-            "🤔 I didn't understand that.\n\n"
-            "Please pick your language using the buttons below:"
-        ),
-        "unrecognised_mode": (
-            "🤔 I didn't understand that.\n\n"
-            "Please choose a conversion direction using the buttons below:"
-        ),
+        "unrecognised_lang": "🤔 Please pick your language using the buttons below:",
+        "unrecognised_mode": "🤔 Please choose an option from the menu below:",
         "unrecognised_date": (
-            "🤔 That doesn't look like a date.\n\n"
-            "Please enter the date in YYYY/MM/DD format.\n"
-            "📌 Example: {}\n\n"
-            "Or pick a different option from the menu below."
+            "🤔 *That doesn't look like a date.*\n\n"
+            "Please enter the date in `YYYY/MM/DD` format.\n"
+            "📌 Example: `{}`\n\n"
+            "Or press Cancel to go back to the menu."
         ),
         "format_error": (
-            "❌ Wrong format.\n\n"
-            "Use YYYY/MM/DD  (numbers only, separated by /)\n"
-            "📌 Example: {}\n\n"
-            "Please try again, or pick a different option below."
+            "❌ *Wrong format.*\n\n"
+            "Use numbers only, separated by `/`\n"
+            "📌 Example: `{}`\n\n"
+            "Try again, or press Cancel to go back."
         ),
         "conversion_error": (
-            "❌ Invalid date:\n\n"
-            "{}\n\n"
-            "Please correct the date and try again, or pick a different option below."
+            "❌ *Invalid date:*\n\n_{}_\n\n"
+            "Please correct the date and try again, or press Cancel to go back."
         ),
-        "e2g": "✅ Ethiopian date:\n{}\n\n➡️ Gregorian date:\n{}\n\nConvert another date:",
-        "g2e": "✅ Gregorian date:\n{}\n\n➡️ Ethiopian date:\n{}\n\nConvert another date:",
+        "e2g": "✅ *Ethiopian date:*\n{}\n\n➡️ *Gregorian date:*\n{}",
+        "g2e": "✅ *Gregorian date:*\n{}\n\n➡️ *Ethiopian date:*\n{}",
+        "today": (
+            "📅 *Today's Date*\n\n"
+            "🌍 *Gregorian:* {}\n"
+            "🇪🇹 *Ethiopian:* {}\n"
+            "📆 *Day:* {}\n\n"
+            "{}"  # holiday notice if any
+        ),
+        "holiday_notice": "🎉 *Today is a holiday:*\n{}",
+        "holidays": (
+            "🗓 *Ethiopian Public Holidays*\n\n"
+            "{}"
+        ),
+        "no_holidays": "No holidays found.",
         "help": (
             "ℹ️ *Ethiopian Date Converter — Help*\n\n"
             "*How to use:*\n"
-            "1️⃣ Choose a conversion direction\n"
-            "2️⃣ Type your date as YYYY/MM/DD\n"
-            "3️⃣ Receive the converted date\n\n"
+            "1️⃣ Tap *Ethiopian → Gregorian* or *Gregorian → Ethiopian*\n"
+            "2️⃣ Type your date as `YYYY/MM/DD`\n"
+            "3️⃣ Receive the converted date instantly\n\n"
+            "📅 Tap *Today* to see today's date in both calendars.\n"
+            "🗓 Tap *Holidays* to see Ethiopian public holidays.\n\n"
             "*Ethiopian calendar facts:*\n"
-            "• 13 months total\n"
-            "• Months 1–12 each have 30 days\n"
+            "• 13 months — months 1–12 have 30 days each\n"
             "• Month 13 (ጳጉሜ/Pagume) has 5 days (6 in a leap year)\n"
             "• Ethiopian year is ~7–8 years behind the Gregorian year\n\n"
-            "*Examples:*\n"
-            "• Ethiopian 2017/4/27  →  Gregorian January 5, 2025\n"
-            "• Gregorian 2025/1/5  →  Ethiopian 2017/4/27\n\n"
+            "*Example conversions:*\n"
+            "• Ethiopian `2017/4/27` → Gregorian January 5, 2025\n"
+            "• Gregorian `2025/1/5` → Ethiopian 2017/4/27\n\n"
             "*Commands:*\n"
             "/start — restart the bot\n"
-            "/help  — show this message"
+            "/help  — show this message\n"
+            "/today — today's date in both calendars"
         ),
-        "change_language": "Choose your language:",
-        "not_admin": "⛔ This command is only available to administrators.",
+        "cancelled":        "↩️ Cancelled. Choose an option:",
+        "change_language":  "Choose your language:",
+        "not_admin":        "⛔ This command is only available to administrators.",
         "stats": (
             "📊 *Bot Statistics*\n\n"
             "👥 Total unique users: *{}*\n"
             "🆔 Your user ID: `{}`\n"
             "💾 Storage: {}"
         ),
-        "users_list": "👥 *Registered Users* ({}) — sorted by sign-up date\n\n{}",
+        "users_list":       "👥 *Registered Users* ({}) — newest first\n\n{}",
         "users_list_empty": "👥 No users registered yet.",
+        "convert_another":  "Convert another date:",
     },
     "am": {
         "welcome": (
-            "👋 እንኳን ደህና መጡ! የኢትዮጵያ ቀን መቀየሪያ!\n\n"
-            "በኢትዮጵያ እና ግሪጎሪያን ካላንደሮች መካከል ቀናትን መቀየር ይችላሉ።\n\n"
+            "👋 *እንኳን ደህና መጡ! የኢትዮጵያ ቀን መቀየሪያ!*\n\n"
+            "በኢትዮጵያ እና ግሪጎሪያን ካላንደሮች መካከል ቀናትን መቀየር፣ "
+            "ዛሬን ማሳየት፣ እና የኢትዮጵያ በዓላትን ማየት ይችላሉ።\n\n"
             "ቋንቋ ይምረጡ:"
         ),
-        "choose": "✅ ቋንቋ አማርኛ ተመርጧል።\n\nየመቀየሪያ አቅጣጫ ይምረጡ:",
+        "choose": (
+            "✅ ቋንቋ *አማርኛ* ተመርጧል።\n\n"
+            "ከታቹ ያሉ አዝራሮችን ይጠቀሙ:"
+        ),
         "ask_e": (
-            "📥 የኢትዮጵያ ቀን ያስገቡ:\n"
-            "YYYY/MM/DD\n\n"
-            "📌 ምሳሌ: 2017/4/27\n\n"
-            "💡 የኢትዮጵያ ካላንደር 13 ወሮች አሉት።\n"
-            "ወር 1–12 እያንዳንዳቸው 30 ቀናት አሏቸው።\n"
-            "ወር 13 (ጳጉሜ) 5 ቀናት አሉት፣ ወይም 6 ቀናት ዘመነ ሉቃስ።"
+            "📥 *የኢትዮጵያ ቀን ያስገቡ:*\n\n"
+            "ቅጽ: `YYYY/MM/DD`\n"
+            "ምሳሌ: `2017/4/27`\n\n"
+            "─────────────────\n"
+            "💡 *የኢትዮጵያ ካላንደር:*\n"
+            "• 13 ወሮች አሉ\n"
+            "• ወር 1–12 እያንዳንዳቸው *30 ቀናት* አሏቸው\n"
+            "• ወር 13 (ጳጉሜ) *5 ቀናት* አሉት (ዘመነ ሉቃስ 6)\n"
+            "• የኢትዮጵያ ዓ.ም ከግሪጎሪያን ~*7-8 ዓመት* ወደኋላ ነው\n\n"
+            "ቀኑን ያስገቡ ወይም ለቀደም ይምለሱ።"
         ),
         "ask_g": (
-            "📥 የግሪጎሪያን ቀን ያስገቡ:\n"
-            "YYYY/MM/DD\n\n"
-            "📌 ምሳሌ: 2025/1/5"
+            "📥 *የግሪጎሪያን ቀን ያስገቡ:*\n\n"
+            "ቅጽ: `YYYY/MM/DD`\n"
+            "ምሳሌ: `2025/1/5`\n\n"
+            "ቀኑን ያስገቡ ወይም ለቀደም ይምለሱ።"
         ),
-        "unrecognised_lang": (
-            "🤔 ያስገቡት ጽሑፍ አልተረዳም።\n\n"
-            "እባክዎ ከታቹ ያሉ አዝራሮችን ተጠቅመው ቋንቋ ይምረጡ:"
-        ),
-        "unrecognised_mode": (
-            "🤔 ያስገቡት ጽሑፍ አልተረዳም።\n\n"
-            "እባክዎ ከታቹ ያሉ አዝራሮችን ተጠቅመው የመቀየሪያ አቅጣጫ ይምረጡ:"
-        ),
+        "unrecognised_lang": "🤔 ቋንቋ ይምረጡ:",
+        "unrecognised_mode": "🤔 ከታቹ ያሉ አዝራሮችን ይምረጡ:",
         "unrecognised_date": (
-            "🤔 ያስገቡት ቀን አይደለም።\n\n"
-            "ቀኑን YYYY/MM/DD ቅጽ ያስገቡ።\n"
-            "📌 ምሳሌ: {}\n\n"
-            "ወይም ከታቹ ሌላ አማራጭ ይምረጡ።"
+            "🤔 *ያስገቡት ቀን አይደለም።*\n\n"
+            "ቀኑን `YYYY/MM/DD` ቅጽ ያስገቡ።\n"
+            "📌 ምሳሌ: `{}`\n\n"
+            "ወይም ለቀደም ይምለሱ።"
         ),
         "format_error": (
-            "❌ ቅጹ ተሳስቷል።\n\n"
-            "YYYY/MM/DD ይጠቀሙ  (ቁጥሮች ብቻ፣ በ / ይለዩ)\n"
-            "📌 ምሳሌ: {}\n\n"
-            "እባክዎ እንደገና ሞክሩ፣ ወይም ከታቹ ሌላ አማራጭ ይምረጡ።"
+            "❌ *ቅጹ ተሳስቷል።*\n\n"
+            "ቁጥሮች ብቻ፣ በ `/` ይለዩ\n"
+            "📌 ምሳሌ: `{}`\n\n"
+            "እንደገና ሞክሩ፣ ወይም ለቀደም ይምለሱ።"
         ),
         "conversion_error": (
-            "❌ ቀኑ ልክ አይደለም:\n\n"
-            "{}\n\n"
-            "ቀኑን አርመው እንደገና ሞክሩ፣ ወይም ከታቹ ሌላ አማራጭ ይምረጡ።"
+            "❌ *ቀኑ ልክ አይደለም:*\n\n_{}_\n\n"
+            "ቀኑን አርመው እንደገና ሞክሩ፣ ወይም ለቀደም ይምለሱ።"
         ),
-        "e2g": "✅ የኢትዮጵያ ቀን:\n{}\n\n➡️ የግሪጎሪያን ቀን:\n{}\n\nሌላ ቀን ቀይሩ:",
-        "g2e": "✅ የግሪጎሪያን ቀን:\n{}\n\n➡️ የኢትዮጵያ ቀን:\n{}\n\nሌላ ቀን ቀይሩ:",
+        "e2g": "✅ *የኢትዮጵያ ቀን:*\n{}\n\n➡️ *የግሪጎሪያን ቀን:*\n{}",
+        "g2e": "✅ *የግሪጎሪያን ቀን:*\n{}\n\n➡️ *የኢትዮጵያ ቀን:*\n{}",
+        "today": (
+            "📅 *ዛሬ*\n\n"
+            "🌍 *ግሪጎሪያን:* {}\n"
+            "🇪🇹 *ኢትዮጵያ:* {}\n"
+            "📆 *ቀን:* {}\n\n"
+            "{}"
+        ),
+        "holiday_notice": "🎉 *ዛሬ በዓል ነው:*\n{}",
+        "holidays": (
+            "🗓 *የኢትዮጵያ ብሔራዊ በዓሎች*\n\n"
+            "{}"
+        ),
+        "no_holidays": "በዓሎች አልተገኙም።",
         "help": (
             "ℹ️ *የኢትዮጵያ ቀን መቀየሪያ — እገዛ*\n\n"
             "*አጠቃቀም:*\n"
-            "1️⃣ የመቀየሪያ አቅጣጫ ይምረጡ\n"
-            "2️⃣ ቀኑን YYYY/MM/DD ቅጽ ያስገቡ\n"
+            "1️⃣ *ኢትዮ → ግሪጎ* ወይም *ግሪጎ → ኢትዮ* ይምረጡ\n"
+            "2️⃣ ቀኑን `YYYY/MM/DD` ቅጽ ያስገቡ\n"
             "3️⃣ የተቀየረውን ቀን ይቀበሉ\n\n"
-            "*የኢትዮጵያ ካላንደር:*\n"
-            "• 13 ወሮች አሉ\n"
-            "• ወር 1–12 እያንዳንዳቸው 30 ቀናት\n"
-            "• ወር 13 (ጳጉሜ) 5 ቀናት (ዘመነ ሉቃስ 6 ቀናት)\n"
-            "• የኢትዮጵያ ዓ.ም ከግሪጎሪያን ~7-8 ዓመት ወደኋላ ነው\n\n"
+            "📅 *ዛሬ* — ዛሬን ቀን ይመልከቱ።\n"
+            "🗓 *በዓሎች* — የኢትዮጵያ ብሔራዊ በዓሎችን ይመልከቱ።\n\n"
             "*ምሳሌዎች:*\n"
-            "• ኢትዮ 2017/4/27  →  ጃንዋሪ 5, 2025\n"
-            "• ግሪጎ 2025/1/5  →  ኢትዮ 2017/4/27\n\n"
+            "• ኢትዮ `2017/4/27` → ጃንዋሪ 5, 2025\n"
+            "• ግሪጎ `2025/1/5` → ኢትዮ 2017/4/27\n\n"
             "*ትዕዛዞች:*\n"
-            "/start — ቦቱን ዳግም ጀምር\n"
-            "/help  — ይህን መልዕክት አሳይ"
+            "/start — ዳግም ጀምር\n"
+            "/help  — ይህን አሳይ\n"
+            "/today — ዛሬ"
         ),
-        "change_language": "ቋንቋ ይምረጡ:",
-        "not_admin": "⛔ ይህ ትዕዛዝ ለአስተዳዳሪዎች ብቻ ነው።",
+        "cancelled":        "↩️ ተሰርዟል። አማራጭ ይምረጡ:",
+        "change_language":  "ቋንቋ ይምረጡ:",
+        "not_admin":        "⛔ ይህ ትዕዛዝ ለአስተዳዳሪዎች ብቻ ነው።",
         "stats": (
             "📊 *የቦት አኃዛዊ መረጃ*\n\n"
             "👥 ጠቅላላ ልዩ ተጠቃሚዎች: *{}*\n"
             "🆔 የእርስዎ ተጠቃሚ መለያ: `{}`\n"
             "💾 ማከማቻ: {}"
         ),
-        "users_list": "👥 *ምዝገባ ተጠቃሚዎች* ({}) — በምዝገባ ቅደም ተከተል\n\n{}",
+        "users_list":       "👥 *ምዝገባ ተጠቃሚዎች* ({}) — በምዝገባ ቅደም ተከተል\n\n{}",
         "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
+        "convert_another":  "ሌላ ቀን ቀይሩ:",
     },
 }
 
-EXAMPLE_DATE = {
-    "E2G": "2017/4/27",
-    "G2E": "2025/1/5",
-}
+EXAMPLE_DATE = {"E2G": "2017/4/27", "G2E": "2025/1/5"}
 
-#   Helpers  
+# ─── Formatting helpers ───────────────────────────────────────────────────────
 
 def looks_like_date(text: str) -> bool:
     return "/" in text and any(ch.isdigit() for ch in text)
 
 
-def parse_slash_date(text: str):
+def parse_slash_date(text: str) -> tuple[int, int, int]:
     parts = [p.strip() for p in text.split("/")]
     if len(parts) != 3:
         raise ValueError("must have exactly 3 parts")
     try:
         year, month, day = map(int, parts)
-        return year, month, day
     except ValueError:
         raise ValueError("must be numbers")
+    return year, month, day
 
 
-def format_ethiopian(y, m, d) -> str:
-    am_month = ETH_MONTHS_AM[m - 1]
-    en_month = ETH_MONTHS_EN[m - 1]
-    return f"{d} {am_month} ({en_month}) {y} ዓ.ም"
+def format_ethiopian(eth_y: int, eth_m: int, eth_d: int) -> str:
+    am_month   = ETH_MONTHS_AM[eth_m - 1]
+    en_month   = ETH_MONTHS_EN[eth_m - 1]
+    greg_month = ETH_TO_GREG_MONTH_NAME[eth_m]
+    return f"{eth_d} {am_month} ({en_month}) ({greg_month}) {eth_y} ዓ.ም"
 
 
-def format_ethiopian_with_gregorian(eth_y, eth_m, eth_d, greg_y, greg_m, greg_d) -> str:
-    am_month = ETH_MONTHS_AM[eth_m - 1]
-    en_month = ETH_MONTHS_EN[eth_m - 1]
-    greg_month = GREG_MONTHS[ETH_TO_GREG_MONTH[eth_m] - 1]  
-    return f"{eth_d} {am_month} ({en_month}) {eth_y} ዓ.ም, or {greg_d} {greg_month} {greg_y}"
-
-
-def format_gregorian(y, m, d) -> str:
+def format_gregorian(y: int, m: int, d: int) -> str:
     return f"{GREG_MONTHS[m - 1]} {d}, {y}"
+
+
+def get_today_both_calendars() -> dict:
+    """Return today's date in both Gregorian and Ethiopian, with weekday."""
+    now  = datetime.now(timezone.utc)
+    gy, gm, gd = now.year, now.month, now.day
+    ey, em, ed = EthiopianDateConverter.to_ethiopian(gy, gm, gd)
+    weekday_idx = now.weekday()  # 0=Monday
+    return {
+        "greg_str":    format_gregorian(gy, gm, gd),
+        "eth_str":     format_ethiopian(ey, em, ed),
+        "weekday_en":  ETH_WEEKDAYS_EN[weekday_idx],
+        "weekday_am":  ETH_WEEKDAYS_AM[weekday_idx],
+        "eth_month":   em,
+        "eth_day":     ed,
+    }
+
+
+def get_holiday_for_eth_date(eth_m: int, eth_d: int, lang: str) -> str | None:
+    """Return a holiday string if (eth_m, eth_d) is a holiday, else None."""
+    h = ETH_HOLIDAYS.get((eth_m, eth_d))
+    if h:
+        return h.get(lang, h["en"])
+    return None
+
+
+def build_holidays_text(lang: str) -> str:
+    """Build a formatted list of all Ethiopian holidays."""
+    lines = []
+    for (em, ed), names in sorted(ETH_HOLIDAYS.items()):
+        eth_month_en = ETH_MONTHS_EN[em - 1]
+        eth_month_am = ETH_MONTHS_AM[em - 1]
+        name = names.get(lang, names["en"])
+        if lang == "am":
+            lines.append(f"{name}\n  📌 {ed} {eth_month_am} ({eth_month_en})")
+        else:
+            lines.append(f"{name}\n  📌 {ed} {eth_month_en}")
+    return "\n\n".join(lines) if lines else TEXT[lang]["no_holidays"]
 
 
 def lang_of(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -402,107 +489,120 @@ def lang_of(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 def format_user_entry(uid: str, record: dict, index: int) -> str:
-    """Format one user line for /users output."""
-    username = record.get("u")
+    username   = record.get("u")
     first_name = record.get("n", "N/A")
-    ts = record.get("t")
-
-    if ts:
-        signup = time.strftime("%Y-%m-%d", time.gmtime(ts))
-    else:
-        signup = "unknown"
-
-    if username:
-        link = f"[🔗 @{username}](https://t.me/{username})"
-    else:
-        link = f"[🔗 Open Profile](tg://user?id={uid})"
-
+    link = (
+        f"[🔗 @{username}](https://t.me/{username})"
+        if username
+        else f"[🔗 Open Profile](tg://user?id={uid})"
+    )
     return f"{index}\\. {first_name} — {link}"
 
 
-#   Handlers  
+# ─── Shared send helpers ──────────────────────────────────────────────────────
+
+async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Send a message with the main menu keyboard."""
+    lang = lang_of(context)
+    if update.callback_query:
+        await update.callback_query.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+    else:
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+
+
+async def send_awaiting_date(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Send a prompt asking for date input with a Cancel button."""
+    lang = lang_of(context)
+    if update.callback_query:
+        await update.callback_query.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
+        )
+    else:
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
+        )
+
+
+# ─── Command Handlers ─────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    user   = update.effective_user
     is_new = add_user(user.id, username=user.username, first_name=user.first_name)
-
     if is_new:
-        storage_type = "S3" if USE_S3 else "local"
-        print(f"🆕 New user: {user.id} (@{user.username}) — Total: {get_user_count()} [{storage_type}]")
-
+        storage = "S3" if USE_S3 else "local"
+        logger.info(f"New user: {user.id} (@{user.username}) — Total: {get_user_count()} [{storage}]")
     context.user_data.clear()
-    await update.message.reply_text(TEXT["en"]["welcome"], reply_markup=LANG_KEYBOARD)
+    await update.message.reply_text(
+        TEXT["en"]["welcome"], parse_mode="Markdown", reply_markup=lang_keyboard()
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = lang_of(context)
+    kb   = main_keyboard(lang) if "lang" in context.user_data else lang_keyboard()
+    await update.message.reply_text(TEXT[lang]["help"], parse_mode="Markdown", reply_markup=kb)
 
-    if "mode" in context.user_data:
-        keyboard = WAITING_KEYBOARD
-    elif "lang" in context.user_data:
-        keyboard = CONVERT_KEYBOARD
-    else:
-        keyboard = LANG_KEYBOARD
 
-    await update.message.reply_text(
-        TEXT[lang]["help"],
-        parse_mode="Markdown",
-        reply_markup=keyboard,
+async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang   = lang_of(context)
+    today  = get_today_both_calendars()
+    weekday = today["weekday_am"] if lang == "am" else today["weekday_en"]
+    holiday = get_holiday_for_eth_date(today["eth_month"], today["eth_day"], lang)
+    holiday_line = TEXT[lang]["holiday_notice"].format(holiday) if holiday else ""
+    text = TEXT[lang]["today"].format(
+        today["greg_str"], today["eth_str"], weekday, holiday_line
     )
+    kb = main_keyboard(lang) if "lang" in context.user_data else lang_keyboard()
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    lang = lang_of(context)
-
+    lang    = lang_of(context)
     if not is_admin(user_id):
         await update.message.reply_text(TEXT[lang]["not_admin"])
         return
-
-    total_users = get_user_count()
-    storage_info = f"S3 ({AWS_S3_BUCKET_NAME})" if USE_S3 else "Local (⚠️ not persistent)"
-
+    storage = f"S3 ({AWS_BUCKET})" if USE_S3 else "Local (⚠️ not persistent)"
     await update.message.reply_text(
-        TEXT[lang]["stats"].format(total_users, user_id, storage_info),
-        parse_mode="Markdown"
+        TEXT[lang]["stats"].format(get_user_count(), user_id, storage),
+        parse_mode="Markdown",
     )
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all registered users sorted by signup date (newest first)."""
     user_id = update.effective_user.id
-    lang = lang_of(context)
-
+    lang    = lang_of(context)
     if not is_admin(user_id):
         await update.message.reply_text(TEXT[lang]["not_admin"])
         return
 
     all_users = get_all_users()
-
     if not all_users:
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
 
     sorted_users = sorted(
         all_users.items(),
-        key=lambda item: item[1].get("t", float("-inf")),
-        reverse=True
+        key=lambda item: item[1].get("t", 0),
+        reverse=True,
     )
 
-    MAX_CHARS = 4000
-    pages = []
+    MAX_CHARS     = 4000
+    pages         = []
     current_lines = []
-    current_len = 0
+    current_len   = 0
 
     for idx, (uid, record) in enumerate(sorted_users, start=1):
         line = format_user_entry(uid, record, idx)
         if current_len + len(line) > MAX_CHARS and current_lines:
             pages.append("\n\n".join(current_lines))
-            current_lines = []
-            current_len = 0
+            current_lines, current_len = [], 0
         current_lines.append(line)
         current_len += len(line)
-
     if current_lines:
         pages.append("\n\n".join(current_lines))
 
@@ -518,56 +618,121 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ─── Callback Query Handler ───────────────────────────────────────────────────
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data  = query.data
+    lang  = lang_of(context)
+
+    # ── Language selection ──
+    if data.startswith("lang:"):
+        chosen = data.split(":")[1]
+        context.user_data["lang"] = chosen
+        lang = chosen
+        await query.message.reply_text(
+            TEXT[lang]["choose"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+        return
+
+    # ── Mode selection ──
+    if data.startswith("mode:"):
+        mode = data.split(":")[1]
+        context.user_data["mode"] = mode
+        prompt = TEXT[lang]["ask_e"] if mode == "E2G" else TEXT[lang]["ask_g"]
+        await query.message.reply_text(
+            prompt, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
+        )
+        return
+
+    # ── Actions ──
+    if data == "action:today":
+        today   = get_today_both_calendars()
+        weekday = today["weekday_am"] if lang == "am" else today["weekday_en"]
+        holiday = get_holiday_for_eth_date(today["eth_month"], today["eth_day"], lang)
+        holiday_line = TEXT[lang]["holiday_notice"].format(holiday) if holiday else ""
+        text = TEXT[lang]["today"].format(
+            today["greg_str"], today["eth_str"], weekday, holiday_line
+        )
+        await query.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+        return
+
+    if data == "action:holidays":
+        holidays_text = build_holidays_text(lang)
+        await query.message.reply_text(
+            TEXT[lang]["holidays"].format(holidays_text),
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(lang),
+        )
+        return
+
+    if data == "action:help":
+        await query.message.reply_text(
+            TEXT[lang]["help"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+        return
+
+    if data == "action:changelang":
+        context.user_data.clear()
+        await query.message.reply_text(
+            TEXT["en"]["change_language"], reply_markup=lang_keyboard()
+        )
+        return
+
+    if data == "action:cancel":
+        context.user_data.pop("mode", None)
+        await query.message.reply_text(
+            TEXT[lang]["cancelled"], parse_mode="Markdown", reply_markup=main_keyboard(lang)
+        )
+        return
+
+    # ── Convert another ──
+    if data == "action:convert_again":
+        mode = context.user_data.get("last_mode", "E2G")
+        context.user_data["mode"] = mode
+        prompt = TEXT[lang]["ask_e"] if mode == "E2G" else TEXT[lang]["ask_g"]
+        await query.message.reply_text(
+            prompt, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
+        )
+        return
+
+
+# ─── Message Handler ──────────────────────────────────────────────────────────
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     lang = lang_of(context)
 
-    if "🌐" in text or "Change Language" in text or "ቋንቋ" in text:
-        context.user_data.clear()
-        await update.message.reply_text(
-            TEXT["en"]["change_language"], reply_markup=LANG_KEYBOARD
-        )
-        return
-
+    # ── If language not yet set, prompt ──
     if "lang" not in context.user_data:
-        if "English" in text:
-            context.user_data["lang"] = "en"
-        elif "አማርኛ" in text:
-            context.user_data["lang"] = "am"
-        else:
-            await update.message.reply_text(
-                TEXT["en"]["unrecognised_lang"], reply_markup=LANG_KEYBOARD
-            )
-            return
-
-        new_lang = context.user_data["lang"]
         await update.message.reply_text(
-            TEXT[new_lang]["choose"], reply_markup=CONVERT_KEYBOARD
+            TEXT["en"]["unrecognised_lang"],
+            parse_mode="Markdown",
+            reply_markup=lang_keyboard(),
         )
         return
 
-    if "Ethiopian →" in text:
-        context.user_data["mode"] = "E2G"
-        await update.message.reply_text(TEXT[lang]["ask_e"], reply_markup=WAITING_KEYBOARD)
-        return
-    if "Gregorian →" in text:
-        context.user_data["mode"] = "G2E"
-        await update.message.reply_text(TEXT[lang]["ask_g"], reply_markup=WAITING_KEYBOARD)
-        return
-
+    # ── If no mode set, prompt menu ──
     if "mode" not in context.user_data:
         await update.message.reply_text(
-            TEXT[lang]["unrecognised_mode"], reply_markup=CONVERT_KEYBOARD
+            TEXT[lang]["unrecognised_mode"],
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(lang),
         )
         return
 
-    mode = context.user_data["mode"]
+    # ── Date input & conversion ──
+    mode    = context.user_data["mode"]
     example = EXAMPLE_DATE[mode]
 
     if not looks_like_date(text):
         await update.message.reply_text(
             TEXT[lang]["unrecognised_date"].format(example),
-            reply_markup=WAITING_KEYBOARD,
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard(lang),
         )
         return
 
@@ -575,50 +740,73 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         y, m, d = parse_slash_date(text)
 
         if mode == "E2G":
-            g = EthiopianDateConverter.to_gregorian(y, m, d)
-            await update.message.reply_text(
-                TEXT[lang]["e2g"].format(
-                    format_ethiopian_with_gregorian(y, m, d, g.year, g.month, g.day),
-                    format_gregorian(g.year, g.month, g.day),
-                ),
-                reply_markup=CONVERT_KEYBOARD,
-            )
+            g        = EthiopianDateConverter.to_gregorian(y, m, d)
+            eth_str  = format_ethiopian(y, m, d)
+            greg_str = format_gregorian(g.year, g.month, g.day)
+            reply    = TEXT[lang]["e2g"].format(eth_str, greg_str)
         else:
             ey, em, ed = EthiopianDateConverter.to_ethiopian(y, m, d)
-            await update.message.reply_text(
-                TEXT[lang]["g2e"].format(
-                    format_gregorian(y, m, d),
-                    format_ethiopian_with_gregorian(ey, em, ed, y, m, d),
-                ),
-                reply_markup=CONVERT_KEYBOARD,
-            )
+            greg_str   = format_gregorian(y, m, d)
+            eth_str    = format_ethiopian(ey, em, ed)
+            reply      = TEXT[lang]["g2e"].format(greg_str, eth_str)
 
+        # Check if converted Ethiopian date is a holiday
+        if mode == "G2E":
+            holiday = get_holiday_for_eth_date(em, ed, lang)
+        else:
+            holiday = get_holiday_for_eth_date(m, d, lang)
+
+        if holiday:
+            reply += f"\n\n{TEXT[lang]['holiday_notice'].format(holiday)}"
+
+        context.user_data["last_mode"] = mode
         context.user_data.pop("mode", None)
 
+        # Offer to convert another date or go back to menu
+        convert_label = "🔄 ሌላ ቀን" if lang == "am" else "🔄 Convert Another"
+        menu_label    = "📋 menu"    if lang == "am" else "📋 Menu"
+        post_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(convert_label, callback_data="action:convert_again"),
+                InlineKeyboardButton(menu_label,    callback_data="action:cancel"),
+            ]
+        ])
+        await update.message.reply_text(
+            reply, parse_mode="Markdown", reply_markup=post_keyboard
+        )
+
     except ValueError as e:
-        error_message = str(e)
-        if "must have exactly 3 parts" in error_message or "must be numbers" in error_message:
-            reply = TEXT[lang]["format_error"].format(example)
-        else:
-            reply = TEXT[lang]["conversion_error"].format(error_message)
-        await update.message.reply_text(reply, reply_markup=WAITING_KEYBOARD)
+        msg   = str(e)
+        error = (
+            TEXT[lang]["format_error"].format(example)
+            if "3 parts" in msg or "must be numbers" in msg
+            else TEXT[lang]["conversion_error"].format(msg)
+        )
+        await update.message.reply_text(
+            error, parse_mode="Markdown", reply_markup=cancel_keyboard(lang)
+        )
 
     except Exception as e:
+        logger.exception("Unexpected conversion error")
         await update.message.reply_text(
             TEXT[lang]["conversion_error"].format(f"Unexpected error: {e}"),
-            reply_markup=WAITING_KEYBOARD,
+            parse_mode="Markdown",
+            reply_markup=cancel_keyboard(lang),
         )
 
 
-#   App  
+# ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("users", users_command))
+
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("help",   help_command))
+    app.add_handler(CommandHandler("today",  today_command))
+    app.add_handler(CommandHandler("stats",  stats_command))
+    app.add_handler(CommandHandler("users",  users_command))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("🤖 Bot is starting… Press Ctrl+C to stop.")
+    logger.info("🤖 Bot is running… Press Ctrl+C to stop.")
     app.run_polling()
