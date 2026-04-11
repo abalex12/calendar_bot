@@ -8,7 +8,7 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
- )
+)
 from dotenv import load_dotenv
 from converter import EthiopianDateConverter
 import boto3
@@ -57,7 +57,7 @@ def load_users() -> dict:
     global _users_cache
 
     if _users_cache is not None:
-        return _users_cache  # Serve from memory — no S3 call
+        return _users_cache
 
     if USE_S3:
         try:
@@ -89,10 +89,7 @@ def save_users(users_dict: dict):
     """Persist users to S3 or local file, and keep cache in sync."""
     global _users_cache
 
-    # Keep the in-memory cache up to date
     _users_cache = users_dict
-
-    # Compact JSON — no indent, saves space at scale
     json_data = json.dumps({"users": users_dict}, separators=(',', ':'))
 
     if USE_S3:
@@ -116,20 +113,14 @@ def save_users(users_dict: dict):
 def add_user(user_id: int, username: str = None, first_name: str = None) -> bool:
     """
     Add a new user or silently skip existing ones.
-    Stores only the minimum needed fields:
-      - "u": username (omitted if None)
-      - "n": first_name (omitted if None)
-      - "t": Unix signup timestamp (set once, never overwritten)
-
     Returns True if this is a genuinely new user.
     """
     users = load_users()
     key = str(user_id)
 
     if key in users:
-        return False  # Already tracked — no write needed
+        return False
 
-    # Build the smallest possible record
     record: dict = {"t": int(time.time())}
     if username:
         record["u"] = username
@@ -280,7 +271,7 @@ TEXT = {
             "🆔 Your user ID: `{}`\n"
             "💾 Storage: {}"
         ),
-        "users_list_header": "👥 *Registered Users* ({}) — sorted by sign-up date",
+        "users_list_header": "👥 *Registered Users* ({} total) — showing {}-{}",
         "users_list_empty": "👥 No users registered yet.",
     },
     "am": {
@@ -356,7 +347,7 @@ TEXT = {
             "🆔 የእርስዎ ተጠቃሚ መለያ: `{}`\n"
             "💾 ማከማቻ: {}"
         ),
-        "users_list_header": "👥 *ምዝገባ ተጠቃሚዎች* ({}) — በምዝገባ ቅደም ተከተል",
+        "users_list_header": "👥 *ምዝገባ ተጠቃሚዎች* ({} ጠቅላላ) — እያሳየ {}-{}",
         "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
     },
 }
@@ -463,12 +454,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List registered users sorted by signup date (newest first).
+    """List registered users in a specific range.
 
     Usage:
-        /users            — show users 1–50
-        /users 51 100     — show users 51–100
-        /users 101        — show users 101–150 (end defaults to start+49)
+        /users 1 50       — show users 1 to 50
+        /users 51 100     — show users 51 to 100
     """
     user_id = update.effective_user.id
     lang    = lang_of(context)
@@ -477,61 +467,69 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXT[lang]["not_admin"])
         return
 
+    # ── Require exactly two arguments ────────────────────────────────────────
+    args = context.args or []
+    if len(args) != 2:
+        total = get_user_count()
+        await update.message.reply_text(
+            f"❌ Please specify a range.\n\n"
+            f"Usage: `/users <from> <to>`\n"
+            f"Example: `/users 1 50`\n\n"
+            f"👥 Total users: *{total}*",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        range_start, range_end = int(args[0]), int(args[1])
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Both arguments must be numbers.\n\nExample: `/users 1 50`",
+            parse_mode="Markdown",
+        )
+        return
+
     all_users = get_all_users()
+    total = len(all_users)
 
     if not all_users:
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
 
-    # ── Parse optional range arguments ──────────────────────────────────────
-    DEFAULT_PAGE_SIZE = 50
-    args = context.args or []
-    total = len(all_users)
-
-    try:
-        if len(args) == 0:
-            range_start, range_end = 1, min(DEFAULT_PAGE_SIZE, total)
-        elif len(args) == 1:
-            range_start = int(args[0])
-            range_end   = min(range_start + DEFAULT_PAGE_SIZE - 1, total)
-        else:
-            range_start, range_end = int(args[0]), int(args[1])
-    except ValueError:
+    # ── Validate range ───────────────────────────────────────────────────────
+    if range_start < 1 or range_end < range_start:
         await update.message.reply_text(
-            "❌ Invalid arguments.\n\nUsage:\n"
-            "`/users` — first 50 users\n"
-            "`/users 51 100` — users 51 to 100\n"
-            "`/users 101` — users 101 to 150",
+            f"❌ Invalid range. `from` must be ≥ 1 and `to` must be ≥ `from`.\n\n"
+            f"👥 Total users: *{total}*",
             parse_mode="Markdown",
         )
         return
 
-    # Clamp to valid bounds
-    range_start = max(1, min(range_start, total))
-    range_end   = max(range_start, min(range_end, total))
+    if range_start > total:
+        await update.message.reply_text(
+            f"❌ Range starts beyond total users.\n\n"
+            f"👥 Total users: *{total}*",
+            parse_mode="Markdown",
+        )
+        return
 
-    # ── Sort all users, then slice the requested range ───────────────────────
+    # Clamp end to actual total
+    range_end = min(range_end, total)
+
+    # ── Sort and slice ───────────────────────────────────────────────────────
     sorted_users = sorted(
         all_users.items(),
         key=lambda item: item[1].get("t", float("-inf")),
         reverse=True,
     )
 
-    # range_start/end are 1-based
     slice_with_global_idx = [
         (global_idx, uid, record)
         for global_idx, (uid, record) in enumerate(sorted_users, start=1)
         if range_start <= global_idx <= range_end
     ]
 
-    if not slice_with_global_idx:
-        await update.message.reply_text(
-            f"⚠️ No users in range {range_start}–{range_end}. "
-            f"Total users: {total}."
-        )
-        return
-
-    # ── Build lines and chunk into ≤4000-char messages ───────────────────────
+    # ── Build and chunk into ≤4000-char messages ─────────────────────────────
     MAX_CHARS = 4000
     pages: list[list[str]] = []
     current_lines: list[str] = []
@@ -539,7 +537,6 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for global_idx, uid, record in slice_with_global_idx:
         line = format_user_entry(uid, record, global_idx)
-        # +1 for the newline separator
         if current_len + len(line) + 1 > MAX_CHARS and current_lines:
             pages.append(current_lines)
             current_lines = []
@@ -550,34 +547,24 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_lines:
         pages.append(current_lines)
 
-    # ── Send pages one by one ────────────────────────────────────────────────
     num_pages = len(pages)
-    next_start = range_end + 1
-    hint = (
-        f"\n\n_Next: /users {next_start} {min(next_start + DEFAULT_PAGE_SIZE - 1, total)}_"
-        if range_end < total else ""
-    )
 
     for i, lines in enumerate(pages):
-        header = TEXT[lang]["users_list_header"].format(total)
-        header += f" _(showing {range_start}–{range_end})_"
+        header = TEXT[lang]["users_list_header"].format(total, range_start, range_end)
         if num_pages > 1:
             header += f" _(part {i + 1}/{num_pages})_"
 
         body = "\n\n".join(lines)
-        footer = hint if i == num_pages - 1 else ""
 
         try:
             await update.message.reply_text(
-                f"{header}\n\n{body}{footer}",
+                f"{header}\n\n{body}",
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
         except Exception as e:
             print(f"Error sending /users page {i + 1}: {e}")
-            await update.message.reply_text(
-                f"❌ Failed to send page {i + 1}/{num_pages}: {e}"
-            )
+            await update.message.reply_text(f"❌ Failed to send page {i + 1}: {e}")
             break
 
 
@@ -674,7 +661,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 #   App  
-
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
