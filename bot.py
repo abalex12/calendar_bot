@@ -675,6 +675,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 #   App  
 
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
