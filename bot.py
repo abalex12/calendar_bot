@@ -280,7 +280,6 @@ TEXT = {
             "🆔 Your user ID: `{}`\n"
             "💾 Storage: {}"
         ),
-        # Single {} placeholder — total count only; user list is appended separately
         "users_list_header": "👥 *Registered Users* ({}) — sorted by sign-up date",
         "users_list_empty": "👥 No users registered yet.",
     },
@@ -290,7 +289,7 @@ TEXT = {
             "በኢትዮጵያ እና ግሪጎሪያን ካላንደሮች መካከል ቀናትን መቀየር ይችላሉ።\n\n"
             "ቋንቋ ይምረጡ:"
         ),
-        "choose": "✅ ቋንቋ አማርኛ ተመርጧል።\n\nየመቀየሪያ አቅጣጫ ይምረጡ:",
+        "choose": "✅ ቋንቋ አማርኛ ተምርጧል።\n\nየመቀየሪያ አቅጣጫ ይምረጡ:",
         "ask_e": (
             "📥 የኢትዮጵያ ቀን ያስገቡ:\n"
             "YYYY/MM/DD\n\n"
@@ -357,7 +356,6 @@ TEXT = {
             "🆔 የእርስዎ ተጠቃሚ መለያ: `{}`\n"
             "💾 ማከማቻ: {}"
         ),
-        # Single {} placeholder — total count only; user list is appended separately
         "users_list_header": "👥 *ምዝገባ ተጠቃሚዎች* ({}) — በምዝገባ ቅደም ተከተል",
         "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
     },
@@ -406,16 +404,13 @@ def format_user_entry(uid: str, record: dict, index: int) -> str:
     first_name = record.get("n", "N/A")
     ts         = record.get("t")
 
-    # Human-readable signup date
     signup = time.strftime("%Y-%m-%d", time.gmtime(ts)) if ts else "unknown"
 
-    # Clickable profile link
     if username:
         link = f"[🔗 @{username}](https://t.me/{username})"
     else:
         link = f"[🔗 Open Profile](tg://user?id={uid})"
 
-    # Use plain dot — Markdown (v1) doesn't require escaping dots
     return f"{index}. {first_name} — {link} `{signup}`"
 
 
@@ -468,7 +463,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all registered users sorted by signup date (newest first)."""
+    """List registered users sorted by signup date (newest first).
+
+    Usage:
+        /users            — show users 1–50
+        /users 51 100     — show users 51–100
+        /users 101        — show users 101–150 (end defaults to start+49)
+    """
     user_id = update.effective_user.id
     lang    = lang_of(context)
 
@@ -482,45 +483,102 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXT[lang]["users_list_empty"])
         return
 
-    # Sort by signup timestamp descending (newer first); missing timestamp goes last
+    # ── Parse optional range arguments ──────────────────────────────────────
+    DEFAULT_PAGE_SIZE = 50
+    args = context.args or []
+    total = len(all_users)
+
+    try:
+        if len(args) == 0:
+            range_start, range_end = 1, min(DEFAULT_PAGE_SIZE, total)
+        elif len(args) == 1:
+            range_start = int(args[0])
+            range_end   = min(range_start + DEFAULT_PAGE_SIZE - 1, total)
+        else:
+            range_start, range_end = int(args[0]), int(args[1])
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid arguments.\n\nUsage:\n"
+            "`/users` — first 50 users\n"
+            "`/users 51 100` — users 51 to 100\n"
+            "`/users 101` — users 101 to 150",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Clamp to valid bounds
+    range_start = max(1, min(range_start, total))
+    range_end   = max(range_start, min(range_end, total))
+
+    # ── Sort all users, then slice the requested range ───────────────────────
     sorted_users = sorted(
         all_users.items(),
         key=lambda item: item[1].get("t", float("-inf")),
         reverse=True,
     )
 
-    # Telegram message limit is 4096 chars — paginate if needed
+    # range_start/end are 1-based
+    slice_with_global_idx = [
+        (global_idx, uid, record)
+        for global_idx, (uid, record) in enumerate(sorted_users, start=1)
+        if range_start <= global_idx <= range_end
+    ]
+
+    if not slice_with_global_idx:
+        await update.message.reply_text(
+            f"⚠️ No users in range {range_start}–{range_end}. "
+            f"Total users: {total}."
+        )
+        return
+
+    # ── Build lines and chunk into ≤4000-char messages ───────────────────────
     MAX_CHARS = 4000
     pages: list[list[str]] = []
     current_lines: list[str] = []
     current_len = 0
 
-    for idx, (uid, record) in enumerate(sorted_users, start=1):
-        line = format_user_entry(uid, record, idx)
-        if current_len + len(line) > MAX_CHARS and current_lines:
+    for global_idx, uid, record in slice_with_global_idx:
+        line = format_user_entry(uid, record, global_idx)
+        # +1 for the newline separator
+        if current_len + len(line) + 1 > MAX_CHARS and current_lines:
             pages.append(current_lines)
             current_lines = []
             current_len = 0
         current_lines.append(line)
-        current_len += len(line)
+        current_len += len(line) + 1
 
     if current_lines:
         pages.append(current_lines)
 
-    total      = len(all_users)
-    num_pages  = len(pages)
-    header_key = "users_list_header"
+    # ── Send pages one by one ────────────────────────────────────────────────
+    num_pages = len(pages)
+    next_start = range_end + 1
+    hint = (
+        f"\n\n_Next: /users {next_start} {min(next_start + DEFAULT_PAGE_SIZE - 1, total)}_"
+        if range_end < total else ""
+    )
 
     for i, lines in enumerate(pages):
-        header = TEXT[lang][header_key].format(total)
+        header = TEXT[lang]["users_list_header"].format(total)
+        header += f" _(showing {range_start}–{range_end})_"
         if num_pages > 1:
-            header += f" _(page {i + 1}/{num_pages})_"
+            header += f" _(part {i + 1}/{num_pages})_"
+
         body = "\n\n".join(lines)
-        await update.message.reply_text(
-            f"{header}\n\n{body}",
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
+        footer = hint if i == num_pages - 1 else ""
+
+        try:
+            await update.message.reply_text(
+                f"{header}\n\n{body}{footer}",
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            print(f"Error sending /users page {i + 1}: {e}")
+            await update.message.reply_text(
+                f"❌ Failed to send page {i + 1}/{num_pages}: {e}"
+            )
+            break
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
