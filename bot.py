@@ -91,7 +91,7 @@ def save_users(users_dict: dict):
 
     _users_cache = users_dict
     json_data = json.dumps({"users": users_dict}, separators=(',', ':'))
-
+  
     if USE_S3:
         try:
             s3_client.put_object(
