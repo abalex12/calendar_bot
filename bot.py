@@ -1,11 +1,12 @@
 import os
 import json
 import time
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -157,7 +158,7 @@ LANG_KEYBOARD = ReplyKeyboardMarkup(
 CONVERT_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["🇪🇹 Ethiopian → 🌍 Gregorian", "🌍 Gregorian → 🇪🇹 Ethiopian"],
-        ["🌐 Change Language"],
+        ["📝 Feedback", "🌐 Change Language"],
     ],
     resize_keyboard=True,
 )
@@ -165,10 +166,24 @@ CONVERT_KEYBOARD = ReplyKeyboardMarkup(
 WAITING_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["🇪🇹 Ethiopian → 🌍 Gregorian", "🌍 Gregorian → 🇪🇹 Ethiopian"],
-        ["🌐 Change Language"],
+        ["📝 Feedback", "🌐 Change Language"],
     ],
     resize_keyboard=True,
 )
+
+STAR_KEYBOARD = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("⭐ 1", callback_data="rating:1"),
+        InlineKeyboardButton("⭐ 2", callback_data="rating:2"),
+        InlineKeyboardButton("⭐ 3", callback_data="rating:3"),
+        InlineKeyboardButton("⭐ 4", callback_data="rating:4"),
+        InlineKeyboardButton("⭐ 5", callback_data="rating:5"),
+    ]
+])
+
+SKIP_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("⏭ Skip — submit now", callback_data="feedback:skip")]
+])
 
 #   Month Labels  
 
@@ -275,7 +290,8 @@ TEXT = {
             "• Gregorian 2025/1/5  →  Ethiopian 2017/4/27\n\n"
             "*Commands:*\n"
             "/start — restart the bot\n"
-            "/help  — show this message"
+            "/help  — show this message\n"
+            "/feedback — leave a rating & review"
         ),
         "change_language": "Choose your language:",
         "not_admin": "⛔ This command is only available to administrators.",
@@ -287,6 +303,21 @@ TEXT = {
         ),
         "users_list_header": "👥 *Registered Users* ({} total) — showing {}-{}",
         "users_list_empty": "👥 No users registered yet.",
+        # ── Feedback ──────────────────────────────────────────────────────────
+        "feedback_ask_rating": (
+            "📝 *We'd love your feedback!*\n\n"
+            "How would you rate the Ethiopian Date Converter?\n"
+            "Tap a star below:"
+        ),
+        "feedback_ask_text": (
+            "✨ You rated us *{} star{}!*\n\n"
+            "Would you like to add a comment? Type it below, or tap *Skip* to submit now."
+        ),
+        "feedback_thanks": (
+            "🙏 *Thank you for your feedback!*\n\n"
+            "Your review has been submitted. We really appreciate it!"
+        ),
+        "feedback_cancelled": "❌ Feedback cancelled. Choose a conversion direction:",
     },
     "am": {
         "welcome": (
@@ -351,7 +382,8 @@ TEXT = {
             "• ግሪጎ 2025/1/5  →  ኢትዮ 2017/4/27\n\n"
             "*ትዕዛዞች:*\n"
             "/start — ቦቱን ዳግም ጀምር\n"
-            "/help  — ይህን መልዕክት አሳይ"
+            "/help  — ይህን መልዕክት አሳይ\n"
+            "/feedback — ግምገማ ይስጡ"
         ),
         "change_language": "ቋንቋ ይምረጡ:",
         "not_admin": "⛔ ይህ ትዕዛዝ ለአስተዳዳሪዎች ብቻ ነው።",
@@ -363,6 +395,21 @@ TEXT = {
         ),
         "users_list_header": "👥 *ምዝገባ ተጠቃሚዎች* ({} ጠቅላላ) — እያሳየ {}-{}",
         "users_list_empty": "👥 ምንም ተጠቃሚ ገና አልመዘገቡም።",
+        # ── Feedback (English UI kept for Amharic users too, per your choice) ──
+        "feedback_ask_rating": (
+            "📝 *We'd love your feedback!*\n\n"
+            "How would you rate the Ethiopian Date Converter?\n"
+            "Tap a star below:"
+        ),
+        "feedback_ask_text": (
+            "✨ You rated us *{} star{}!*\n\n"
+            "Would you like to add a comment? Type it below, or tap *Skip* to submit now."
+        ),
+        "feedback_thanks": (
+            "🙏 *Thank you for your feedback!*\n\n"
+            "Your review has been submitted. We really appreciate it!"
+        ),
+        "feedback_cancelled": "❌ Feedback cancelled. Choose a conversion direction:",
     },
 }
 
@@ -419,6 +466,35 @@ def format_user_entry(uid: str, record: dict, index: int) -> str:
     return f"{index}. {first_name} — {link} `{signup}`"
 
 
+async def send_feedback_to_admin(bot, user: object, rating: int, comment: str | None):
+    """Forward a completed feedback entry to the admin."""
+    if not ADMIN_USER_ID:
+        return
+
+    stars     = "⭐" * rating + "☆" * (5 - rating)
+    username  = f"@{user.username}" if user.username else "no username"
+    name      = user.first_name or "N/A"
+    comment_line = f"\n💬 *Comment:* {comment}" if comment else "\n💬 _No comment provided_"
+
+    message = (
+        f"📝 *New Feedback Received*\n\n"
+        f"👤 *From:* {name} ({username})\n"
+        f"🆔 *User ID:* `{user.id}`\n"
+        f"⭐ *Rating:* {stars} ({rating}/5)"
+        f"{comment_line}\n\n"
+        f"🕐 {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}"
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=int(ADMIN_USER_ID),
+            text=message,
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        print(f"Failed to forward feedback to admin: {e}")
+
+
 #   Handlers  
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,7 +512,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = lang_of(context)
 
-    if "mode" in context.user_data:
+    if "mode" in context.user_data or context.user_data.get("feedback_step"):
         keyboard = WAITING_KEYBOARD
     elif "lang" in context.user_data:
         keyboard = CONVERT_KEYBOARD
@@ -582,10 +658,103 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
 
+# ─── Feedback flow ────────────────────────────────────────────────────────────
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /feedback command."""
+    lang = lang_of(context)
+    # Clear any active conversion mode so feedback flow takes over cleanly
+    context.user_data.pop("mode", None)
+    context.user_data["feedback_step"] = "awaiting_rating"
+
+    await update.message.reply_text(
+        TEXT[lang]["feedback_ask_rating"],
+        parse_mode="Markdown",
+        reply_markup=STAR_KEYBOARD,
+    )
+
+
+async def handle_rating_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle ⭐ inline button taps."""
+    query = update.callback_query
+    await query.answer()  # dismiss the loading indicator
+
+    lang = lang_of(context)
+    data = query.data  # e.g. "rating:4"
+
+    if data.startswith("rating:"):
+        rating = int(data.split(":")[1])
+        context.user_data["feedback_rating"] = rating
+        context.user_data["feedback_step"] = "awaiting_comment"
+
+        plural = "s" if rating != 1 else ""
+        await query.edit_message_text(
+            TEXT[lang]["feedback_ask_text"].format(rating, plural),
+            parse_mode="Markdown",
+            reply_markup=SKIP_KEYBOARD,
+        )
+
+    elif data == "feedback:skip":
+        # User skipped the comment — submit with no comment
+        rating  = context.user_data.pop("feedback_rating", 0)
+        context.user_data.pop("feedback_step", None)
+
+        await query.edit_message_text(
+            TEXT[lang]["feedback_thanks"],
+            parse_mode="Markdown",
+        )
+
+        await send_feedback_to_admin(
+            bot=context.bot,
+            user=update.effective_user,
+            rating=rating,
+            comment=None,
+        )
+
+        # Restore main menu
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Choose a conversion direction:",
+            reply_markup=CONVERT_KEYBOARD,
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     lang = lang_of(context)
 
+    # ── Feedback button in reply keyboard ────────────────────────────────────
+    if "📝 Feedback" in text:
+        context.user_data.pop("mode", None)
+        context.user_data["feedback_step"] = "awaiting_rating"
+        await update.message.reply_text(
+            TEXT[lang]["feedback_ask_rating"],
+            parse_mode="Markdown",
+            reply_markup=STAR_KEYBOARD,
+        )
+        return
+
+    # ── If user is in the feedback comment step ───────────────────────────────
+    if context.user_data.get("feedback_step") == "awaiting_comment":
+        rating  = context.user_data.pop("feedback_rating", 0)
+        context.user_data.pop("feedback_step", None)
+        comment = text
+
+        await update.message.reply_text(
+            TEXT[lang]["feedback_thanks"],
+            parse_mode="Markdown",
+            reply_markup=CONVERT_KEYBOARD,
+        )
+
+        await send_feedback_to_admin(
+            bot=context.bot,
+            user=update.effective_user,
+            rating=rating,
+            comment=comment,
+        )
+        return
+
+    # ── Change language ───────────────────────────────────────────────────────
     if "🌐" in text or "Change Language" in text or "ቋንቋ" in text:
         context.user_data.clear()
         await update.message.reply_text(
@@ -593,6 +762,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Language selection ────────────────────────────────────────────────────
     if "lang" not in context.user_data:
         if "English" in text:
             context.user_data["lang"] = "en"
@@ -610,6 +780,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Conversion direction ──────────────────────────────────────────────────
     if "Ethiopian →" in text:
         context.user_data["mode"] = "E2G"
         await update.message.reply_text(TEXT[lang]["ask_e"], reply_markup=WAITING_KEYBOARD)
@@ -625,6 +796,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Date conversion ───────────────────────────────────────────────────────
     mode    = context.user_data["mode"]
     example = EXAMPLE_DATE[mode]
 
@@ -682,6 +854,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CallbackQueryHandler(handle_rating_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 Bot is starting… Press Ctrl+C to stop.")
